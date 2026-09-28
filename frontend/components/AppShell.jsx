@@ -161,6 +161,11 @@ export default function AppShell({ initialData, session }) {
   // exams, gov-doc expiries, donor follow-ups). Dismissable; the bell
   // panel stays the source of truth.
   const [reminderToast, setReminderToast] = useState(null);
+  // Manual refresh (top bar). Data is only fetched when a screen mounts, so an
+  // app or tab left open overnight still shows yesterday until something
+  // re-fetches — this is the one-tap way to pull the current day's numbers.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState(null);
   const userMenuRef = useRef(null);
 
   // Role comes from the server-issued session — never from localStorage.
@@ -376,6 +381,19 @@ export default function AppShell({ initialData, session }) {
         TRANSPORT_ASSIGNMENTS: json.transportAssignments || [],
       });
     } catch {}
+  };
+
+  // Top-bar refresh. Wraps refresh() with a spinning state so the tap has
+  // visible feedback, and keeps a "just now / 5m ago" stamp for the tooltip.
+  const manualRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await refresh();
+      setRefreshedAt(Date.now());
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const view = settings.view;
@@ -764,6 +782,17 @@ export default function AppShell({ initialData, session }) {
             }
           />
           <div className="topbar-right">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={manualRefresh}
+              disabled={refreshing}
+              aria-label="Refresh data"
+              title={refreshing ? "Refreshing…" : `Refresh data${refreshedAt ? ` · updated ${agoLabel(refreshedAt)}` : ""}`}
+              style={refreshing ? { animation: "vid360-spin 0.9s linear infinite" } : undefined}
+            >
+              <Icon name="refresh" size={15} />
+            </button>
             <NotificationsPanel E={scopedData} role={role} setCurrent={setCurrent} />
             {userMenu}
           </div>
@@ -789,6 +818,14 @@ export default function AppShell({ initialData, session }) {
 // One per session per user per day (gated by sessionStorage in the parent).
 // Auto-dismisses after 12s but stays clickable to jump to the relevant
 // screen, or to the bell when no specific screen makes sense.
+// "just now" / "5m ago" / "2h ago" — for the refresh button's tooltip.
+function agoLabel(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
+}
+
 function ReminderToast({ toast, onDismiss, onOpen }) {
   useEffect(() => {
     if (!toast) return;

@@ -7,6 +7,10 @@ import { money, moneyK, FEE_TYPES, feeTypeLabel, formatClassLabel } from "@/lib/
 import { resolveSchool, downloadPdf } from "@/lib/export";
 
 const DEMO_PARENT_PHONE = "+919876543210";
+// Transport is stored as one annual balance per student; pending reports also
+// show it per month by dividing across this many billable months.
+const TRANSPORT_MONTHS = 11;
+const transportPerMonth = (amt) => Math.round((Number(amt) || 0) / TRANSPORT_MONTHS);
 
 // Customized bulk-reminder presets. `combo` = students who have BOTH fee types
 // pending (reminds both lines); `type` = a single fee type pending. `group`
@@ -699,6 +703,7 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
         { key: "term",      label: termLabel,   align: "right" },
         { key: "admission", label: "Admission", align: "right" },
         { key: "transport", label: "Transport", align: "right" },
+        { key: "trMonth",   label: `Transport / month (÷${TRANSPORT_MONTHS})`, align: "right" },
         { key: "total",     label: "Total due", align: "right" },
       ],
       rows: students.map((s, i) => ({
@@ -708,6 +713,7 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
         term: s.term ? money(s.term) : "—",
         admission: s.admission ? money(s.admission) : "—",
         transport: s.transport ? money(s.transport) : "—",
+        trMonth: s.transport ? money(transportPerMonth(s.transport)) : "—",
         total: money(s.term + s.admission + s.transport),
       })),
       filename: `${school.name.replace(/\s+/g, "-").toLowerCase()}-pending-${termLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${new Date().toISOString().slice(0, 10)}`,
@@ -732,17 +738,19 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
           + `<td style="text-align:right">${s.term ? m(s.term) : "—"}</td>`
           + `<td style="text-align:right">${s.admission ? m(s.admission) : "—"}</td>`
           + `<td style="text-align:right">${s.transport ? m(s.transport) : "—"}</td>`
+          + `<td style="text-align:right">${s.transport ? m(transportPerMonth(s.transport)) : "—"}</td>`
           + `<td style="text-align:right;font-weight:600">${m(s.term + s.admission + s.transport)}</td></tr>`;
       }).join("");
       gT += cT; gA += cA; gTr += cTr;
-      const head = ["#", "Student", termLabel, "Admission", "Transport", "Total due"]
+      const head = ["#", "Student", termLabel, "Admission", "Transport", "Transport / month", "Total due"]
         .map((h, idx) => `<th style="text-align:${idx === 1 ? "left" : "right"};padding:4px 6px;border-bottom:1px solid #bbb;color:#555;font-weight:600">${escapeHtml(h)}</th>`).join("");
       return `<h3 style="margin:18px 0 4px;color:#1f3a8a;font-size:14px">${escapeHtml(formatClassLabel(clsKey))}`
         + ` <span style="font-weight:400;color:#666;font-size:12px">· ${list.length} student${list.length === 1 ? "" : "s"}</span></h3>`
         + `<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr>${head}</tr></thead><tbody>${rows}`
         + `<tr style="background:#f5f2ec;font-weight:700"><td></td><td>Class total</td>`
         + `<td style="text-align:right">${m(cT)}</td><td style="text-align:right">${m(cA)}</td>`
-        + `<td style="text-align:right">${m(cTr)}</td><td style="text-align:right">${m(cT + cA + cTr)}</td></tr></tbody></table>`;
+        + `<td style="text-align:right">${m(cTr)}</td><td style="text-align:right">${m(transportPerMonth(cTr))}</td>`
+        + `<td style="text-align:right">${m(cT + cA + cTr)}</td></tr></tbody></table>`;
     }).join("");
     const scope = groups.length === 1 ? formatClassLabel(groups[0].clsKey) : `${groups.length} classes`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>Pending ${escapeHtml(termLabel)} — ${escapeHtml(scope)}</title>`

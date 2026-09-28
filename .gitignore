@@ -6,10 +6,23 @@ build/
 .env*.local
 .DS_Store
 *.log
-data/db.json
+# Local data store + its backups — real student/fee records. Never commit.
+data/
 .claude/
 # Legacy standalone cinematic sub-app (post-launch, never deployed from here).
 Stansford CRM/
 # Working note, not part of the deploy.
 DEPLOYMENT.md
 data/db.json.backup-*
+
+# Capacitor / Android build output (generated — the android/ project itself is tracked).
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/src/main/assets/public/
+mobile/build/
+
+# App signing key — never commit. Back this file up somewhere safe outside the repo.
+android/keystore/

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sanfort International</title>
+  <style>
+    :root { color-scheme: light dark; --ink: #12213f; --sub: #5b6880; --bg: #f5f2ec; --card: #fff; --accent: #1f3a8a; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink: #eef2fb; --sub: #9aa6bd; --bg: #10151f; --card: #18202e; --accent: #7d9bff; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: grid; place-items: center; padding: 24px;
+    }
+    .card {
+      background: var(--card); border-radius: 16px; padding: 32px 24px; max-width: 380px; width: 100%;
+      text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.08);
+    }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    p { font-size: 14.5px; line-height: 1.55; color: var(--sub); margin: 0 0 20px; }
+    button {
+      background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+      padding: 13px 26px; font-size: 15px; font-weight: 600; cursor: pointer; width: 100%;
+    }
+    .hint { font-size: 12px; color: var(--sub); margin: 16px 0 0; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Can't reach the school server</h1>
+    <p>Check that your phone is connected to the internet, then try again.</p>
+    <button onclick="location.replace('https://sanfort.sirahagents.com')">Try again</button>
+    <p class="hint">sanfort.sirahagents.com</p>
+  </main>
+</body>
+</html>

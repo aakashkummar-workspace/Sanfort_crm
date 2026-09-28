@@ -1,0 +1,16 @@
+{
+  "appId": "com.sanfort.crm",
+  "appName": "Sanfort International",
+  "webDir": "mobile/www",
+  "server": {
+    "url": "https://sanfort.sirahagents.com",
+    "hostname": "sanfort.sirahagents.com",
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": ["sanfort.sirahagents.com", "*.sanfort.sirahagents.com"]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  }
+}

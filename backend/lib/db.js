@@ -8,6 +8,7 @@
 import fs from "fs";
 import path from "path";
 import { formatClassLabel } from "./format.js";
+import { indicatorMax } from "./scale.js";
 import {
   supabase, supabaseEnabled,
   toStudent, toPendingFee, toStaff, toInventory, toBroadcast, toTemplate,
@@ -8850,7 +8851,8 @@ export async function addScaleEntries(sessionId, entries) {
       session_id: sessionId,
       student_id: e.studentId,
       indicator_key: e.indicatorKey,
-      score: Math.max(1, Math.min(4, Math.round(Number(e.score)))),
+      // Clamp to the indicator's own scale (1-10, Yes/No, G/VG/E) — not a flat 4.
+      score: Math.max(1, Math.min(indicatorMax(e.indicatorKey), Math.round(Number(e.score)))),
       note: e.note ? String(e.note).slice(0, 240) : null,
     }));
   if (rows.length === 0) return [];

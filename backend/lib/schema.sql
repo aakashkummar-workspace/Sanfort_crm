@@ -1131,14 +1131,14 @@ create index if not exists idx_scale_sessions_cls     on scale_sessions (cls, se
 alter table scale_sessions enable row level security;
 
 -- ---------- scale_entries -----------------------------------------------
--- Per (session, student, indicator) score 1-4 plus optional one-line note.
+-- Per (session, student, indicator) score 1-10 (per indicator scale) plus optional one-line note.
 -- The composite report aggregates these by student over a date range or term.
 create table if not exists scale_entries (
   id            text primary key,
   session_id    text references scale_sessions(id) on delete cascade,
   student_id    text not null references students(id) on delete cascade,
   indicator_key text not null,                -- 'A.lesson_test', 'E.handwriting', ...
-  score         int not null check (score between 1 and 4),
+  score         int not null check (score between 1 and 10),
   note          text,
   created_at    timestamptz default now()
 );

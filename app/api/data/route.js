@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readAllData, BACKEND } from "@/lib/db";
+import { readAllData, listScaleEntries, listScaleSessions, BACKEND } from "@/lib/db";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -221,5 +221,21 @@ export async function GET() {
   }
   const data = await readAllData();
   const scoped = scopeForRole(data, session);
+  // readAllData only carries the newest 2000 SCALE entries school-wide, so a
+  // parent's child silently lost older marks. Load the child's full history
+  // (plus their class sessions, for dates/subjects on the timeline).
+  if (session.role === "parent" && scoped?.addedStudents?.[0]) {
+    const child = scoped.addedStudents[0];
+    try {
+      const [entries, sessions] = await Promise.all([
+        listScaleEntries({ studentId: child.id, limit: 5000 }),
+        child.cls ? listScaleSessions({ cls: child.cls, limit: 500 }) : [],
+      ]);
+      scoped.scaleEntries = entries;
+      scoped.scaleSessions = sessions.map((s) => ({
+        id: s.id, cls: s.cls, subject: s.subject, sessionDate: s.sessionDate, sessionType: s.sessionType,
+      }));
+    } catch {}
+  }
   return NextResponse.json(scoped, { headers: { "x-data-backend": BACKEND } });
 }

@@ -78,19 +78,45 @@ export default function ScreenClassProgress({ E, role, session }) {
   const marks = E.MARKS || [];
   const students = E.ADDED_STUDENTS || [];
 
-  // Classes that actually have marks — an empty class in the picker is noise.
+  // Every class on the roll, whether or not it has marks yet. A class that is
+  // missing from this row would hide the fact that nobody has entered its
+  // marks - the opposite of useful. Classes without marks get an explicit
+  // empty state when selected.
   const classes = useMemo(() => {
-    const withMarks = new Set();
+    const all = new Set();
+    for (const st of students) {
+      if (!st?.cls) continue;
+      if (myClasses && !myClasses.has(st.cls)) continue;
+      all.add(st.cls);
+    }
+    // Include any class that has exams but no students on the roll.
+    for (const ex of exams) if (ex?.cls) all.add(ex.cls);
+    return [...all].sort((a, b) => {
+      // Montessori grades are stored as 13/14/15 but sit before Class I.
+      const rank = (c) => {
+        const n = Number(String(c).split("-")[0]) || 0;
+        return n >= 13 ? n - 100 : n;
+      };
+      return rank(a) - rank(b) || String(a).localeCompare(String(b));
+    });
+  }, [students, exams, myClasses]);
+
+  // Which classes have marks — used to flag the rest in the picker.
+  const classesWithMarks = useMemo(() => {
+    const set = new Set();
     const examById = new Map(exams.map((e) => [e.id, e]));
     for (const m of marks) {
       const ex = examById.get(m.examId);
-      if (ex?.cls) withMarks.add(ex.cls);
+      if (ex?.cls) set.add(ex.cls);
     }
-    return [...withMarks].sort((a, b) => (Number(a) || 0) - (Number(b) || 0) || String(a).localeCompare(String(b)));
+    return set;
   }, [exams, marks]);
 
   const [cls, setCls] = useState("");
-  const activeCls = cls && classes.includes(cls) ? cls : (classes[0] || "");
+  // Default to the first class that actually has marks, so the page opens on
+  // something worth reading rather than an empty state.
+  const firstWithMarks = classes.find((c) => classesWithMarks.has(c));
+  const activeCls = cls && classes.includes(cls) ? cls : (firstWithMarks || classes[0] || "");
 
   // ---- everything derived for the selected class -------------------------
   const view = useMemo(() => {
@@ -187,7 +213,7 @@ export default function ScreenClassProgress({ E, role, session }) {
     };
   }, [activeCls, exams, marks, students]);
 
-  if (classes.length === 0) {
+  if (classes.length === 0 || classesWithMarks.size === 0) {
     return (
       <div className="page">
         <div className="page-head">
@@ -229,21 +255,39 @@ export default function ScreenClassProgress({ E, role, session }) {
             Class
           </span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {classes.map((c) => (
-              <button
-                key={c}
-                className={`btn sm ${c === activeCls ? "accent" : "ghost"}`}
-                onClick={() => setCls(c)}
-              >
-                {formatClassLabel(c)}
-              </button>
-            ))}
+            {classes.map((c) => {
+              const hasMarks = classesWithMarks.has(c);
+              return (
+                <button
+                  key={c}
+                  className={`btn sm ${c === activeCls ? "accent" : "ghost"}`}
+                  onClick={() => setCls(c)}
+                  title={hasMarks ? `Progress for ${formatClassLabel(c)}` : `${formatClassLabel(c)} — no marks recorded yet`}
+                  style={!hasMarks && c !== activeCls ? { opacity: 0.55 } : undefined}
+                >
+                  {formatClassLabel(c)}
+                  {!hasMarks && <span style={{ marginLeft: 5, fontSize: 10, opacity: 0.8 }}>·</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
 
       {view?.empty ? (
-        <div className="card"><div className="empty" style={{ padding: 40 }}>No marks for {formatClassLabel(activeCls)} yet.</div></div>
+        <div className="card">
+          <div className="empty" style={{ padding: "40px 24px", textAlign: "center" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>
+              No marks recorded for {formatClassLabel(activeCls)}
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", maxWidth: 420, margin: "0 auto", lineHeight: 1.55 }}>
+              {(students.filter((s) => s.cls === activeCls).length || 0) > 0
+                ? <>This class has {students.filter((s) => s.cls === activeCls).length} students on the roll but no marks entered.
+                   Once a teacher records marks on the Exams &amp; Marks screen, the averages and trends appear here.</>
+                : <>No students on the roll for this class yet.</>}
+            </div>
+          </div>
+        </div>
       ) : view ? (
         <>
           {/* Headline numbers. A stat tile, not a chart — one value each. */}

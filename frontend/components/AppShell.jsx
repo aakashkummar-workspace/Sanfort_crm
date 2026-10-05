@@ -53,6 +53,7 @@ import ScreenGovernmentDocuments from "./screens/GovernmentDocuments";
 import ScreenStudentActivities from "./screens/StudentActivities";
 import ScreenCustomRoles from "./screens/CustomRoles";
 import ScreenMessages from "./screens/Messages";
+import ScreenClassProgress from "./screens/ClassProgress";
 import ScreenScale from "./screens/Scale";
 import ScreenScaleReport from "./screens/ScaleReport";
 import ScreenScaleAdmin from "./screens/ScaleAdmin";
@@ -98,6 +99,7 @@ const SCREENS = {
   student_activities: ScreenStudentActivities,
   custom_roles: ScreenCustomRoles,
   messages: ScreenMessages,
+  class_progress: ScreenClassProgress,
   scale: ScreenScale,
   scale_report: ScreenScaleReport,
   scale_admin: ScreenScaleAdmin,

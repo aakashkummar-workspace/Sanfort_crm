@@ -34,10 +34,22 @@ export async function POST(req) {
       const demo = DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === email);
       ok = !!demo && demo.password === password;
     }
-    if (!ok) return NextResponse.json({ ok: false, error: "Invalid email or password" }, { status: 401 });
+    if (!ok) {
+      // The account exists, so name it — an admin reviewing the log needs to
+      // tell "someone is guessing at Mary's account" apart from "someone is
+      // trying addresses that don't exist".
+      logAudit(user.name || email, "Sign in failed", email, {
+        actorId: user.id, actorRole: user.role,
+        entityType: "auth", entityId: email, meta: { reason: "bad_password" },
+      }).catch(() => {});
+      return NextResponse.json({ ok: false, error: "Invalid email or password" }, { status: 401 });
+    }
   } else {
     const demo = DEMO_ACCOUNTS.find((a) => a.email.toLowerCase() === email);
     if (!demo || demo.password !== password) {
+      logAudit("Unknown", "Sign in failed", email, {
+        entityType: "auth", entityId: email, meta: { reason: "no_account" },
+      }).catch(() => {});
       return NextResponse.json({ ok: false, error: "Invalid email or password" }, { status: 401 });
     }
     user = { id: demo.id, email: demo.email, name: demo.name, role: demo.role, linkedId: demo.linkedId || null };
@@ -54,6 +66,10 @@ export async function POST(req) {
       customOk = !!custom.find((r) => r.id === user.role);
     } catch {}
     if (!customOk) {
+      logAudit(user.name || email, "Sign in failed", email, {
+        actorId: user.id, actorRole: user.role,
+        entityType: "auth", entityId: email, meta: { reason: "invalid_role", role: user.role },
+      }).catch(() => {});
       return NextResponse.json({ ok: false, error: "Account has no valid role" }, { status: 403 });
     }
   }

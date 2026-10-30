@@ -24,6 +24,8 @@ function formatIndianPhone(raw) {
 }
 
 export async function POST(req) {
+  const session = await getSession();
+  const actor = session?.name || "System";
   const body = await req.json();
   if (!body || !body.name || !body.name.trim()) {
     return NextResponse.json({ ok: false, error: "Name is required" }, { status: 400 });
@@ -93,7 +95,9 @@ export async function POST(req) {
     );
   }
   const feeTotal = feeRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-  await logAudit("Rashmi Iyer", "New admission", `${row.id} ${row.name} · fee ₹${feeTotal.toLocaleString("en-IN")} (term-wise)`);
+  await logAudit(actor, "New admission", `${row.id} ${row.name} · fee ₹${feeTotal.toLocaleString("en-IN")} (term-wise)`,
+    { actorId: session?.sub, actorRole: session?.role, entityType: "student", entityId: row.id,
+      meta: { cls: row.cls, feeTotal } });
 
   // Auto-provision a parent login scoped to this child so the parent can sign
   // in immediately. Email may be supplied at admission time; otherwise we
@@ -104,7 +108,10 @@ export async function POST(req) {
     parentEmail: body.parentEmail || null,
   });
   if (createdLogin) {
-    try { await logAudit("Rashmi Iyer", "Provisioned parent login", `${row.id} ${row.name} · ${createdLogin.email}`); } catch {}
+    try {
+      await logAudit(actor, "Provisioned parent login", `${row.id} ${row.name} · ${createdLogin.email}`,
+        { actorId: session?.sub, actorRole: session?.role, entityType: "student", entityId: row.id });
+    } catch {}
   }
 
   return NextResponse.json({ ok: true, student, createdLogin });
@@ -220,10 +227,13 @@ export async function PATCH(req) {
 // "Withdraw" — soft-delete. Student record + all financial history are kept;
 // only the active flag flips and any uncollected pending fee is dropped.
 export async function DELETE(req) {
+  const session = await getSession();
+  const actor = session?.name || "System";
   const { id } = await req.json();
   if (!id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
   const archived = await archiveStudent(id);
   if (!archived) return NextResponse.json({ ok: false, error: "Not found" }, { status: 404 });
-  await logAudit("Rashmi Iyer", "Archived student", `${archived.id} ${archived.name} · history kept`);
+  await logAudit(actor, "Archived student", `${archived.id} ${archived.name} · history kept`,
+    { actorId: session?.sub, actorRole: session?.role, entityType: "student", entityId: archived.id });
   return NextResponse.json({ ok: true, student: archived });
 }

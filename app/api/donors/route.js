@@ -1,6 +1,41 @@
 import { NextResponse } from "next/server";
-import { addDonor, archiveDonor, recordDonation, logAudit } from "@/lib/db";
+import { addDonor, archiveDonor, recordDonation, logAudit, listRoleFeatureAccess } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+
+export const dynamic = "force-dynamic";
+
+// Roles allowed to create donors, record donations (which mints an 80G-style
+// receipt) and archive donors. Previously this route had NO role check at all —
+// getSession() was called only to read a name for the audit line, so any signed-in
+// user, including a parent, could issue tax receipts. Mirrors the model in
+// app/api/expenses/route.js.
+const CAN_MANAGE_DONORS = new Set(["admin", "principal", "trust_accountant"]);
+
+// Defence-in-depth: also accept a custom role whose admin granted Edit on the
+// "donors" feature.
+async function canManageDonors(role) {
+  if (CAN_MANAGE_DONORS.has(role)) return true;
+  if (!role || typeof role !== "string") return false;
+  if (!role.startsWith("role-")) return false;
+  try {
+    const feats = await listRoleFeatureAccess(role);
+    const donors = feats.find((f) => f.featureName === "donors");
+    return !!(donors && donors.canEdit);
+  } catch {
+    return false;
+  }
+}
+
+// Shared gate: returns a NextResponse to return early, or null to proceed.
+async function denyUnlessDonorManager(session) {
+  if (!session) {
+    return NextResponse.json({ ok: false, error: "Sign in required" }, { status: 401 });
+  }
+  if (!(await canManageDonors(session.role))) {
+    return NextResponse.json({ ok: false, error: "Not authorised to manage donors" }, { status: 403 });
+  }
+  return null;
+}
 
 function formatIndianPhone(raw) {
   if (!raw) return null;
@@ -13,7 +48,9 @@ function formatIndianPhone(raw) {
 
 export async function POST(req) {
   const session = await getSession();
-  const actor = session?.name || "Principal";
+  const denied = await denyUnlessDonorManager(session);
+  if (denied) return denied;
+  const actor = session.name || "System";
 
   let body; try { body = await req.json(); } catch { body = null; }
   if (!body?.name?.trim()) {
@@ -52,7 +89,9 @@ export async function POST(req) {
 // 80G-style receipt. The donor's YTD + last-gift line are bumped server-side.
 export async function PATCH(req) {
   const session = await getSession();
-  const actor = session?.name || "Principal";
+  const denied = await denyUnlessDonorManager(session);
+  if (denied) return denied;
+  const actor = session.name || "System";
   let body; try { body = await req.json(); } catch { body = null; }
   if (!body?.id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
   if (!body.donate || !Number(body.donate.amount)) {
@@ -69,7 +108,9 @@ export async function PATCH(req) {
 
 export async function DELETE(req) {
   const session = await getSession();
-  const actor = session?.name || "Principal";
+  const denied = await denyUnlessDonorManager(session);
+  if (denied) return denied;
+  const actor = session.name || "System";
   let body; try { body = await req.json(); } catch { body = null; }
   if (!body?.id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
   const removed = await archiveDonor(body.id);

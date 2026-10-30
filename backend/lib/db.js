@@ -701,24 +701,177 @@ export async function removeClass(n) {
 // themselves still attempt the Supabase insert and surface the error
 // via console.warn so issues are visible in pm2 logs even when the
 // caller's try/catch swallows them.
-export async function logAudit(who, action, entity) {
-  const id = "AUD-" + String(Math.floor(Math.random() * 1e6)).padStart(6, "0");
-  const whenLabel = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+// `extra` is optional and backward-compatible: every existing caller passes
+// three arguments and is unaffected. When supplied it carries the structured
+// half of the event — { actorId, actorRole, entityType, entityId, meta } —
+// alongside the human-readable `entity` string, so the audit screen can filter
+// by record ("everything that happened to STN-4001") instead of only by text.
+export async function logAudit(who, action, entity, extra) {
+  // Was "AUD-" + 6 random digits, which is fine for the 100 rows the old read
+  // cap allowed but collides reliably on a text primary key once the log grows.
+  // Time-prefixed so it is monotonic and sorts as a created_at tiebreaker.
+  const id = `AUD-${Date.now().toString(36).toUpperCase()}-${String(Math.floor(Math.random() * 1e4)).padStart(4, "0")}`;
+  // Includes the date: the old "HH:MM"-only label was unreadable the moment the
+  // list spanned more than one day.
+  const whenLabel = new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata", day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  const e = extra && typeof extra === "object" ? extra : {};
   if (supabaseEnabled) {
-    const ins = await supabase.from("audit_log").insert({
+    const payload = {
       id, who, action, entity, when_label: whenLabel, ip: null,
-    });
+      actor_id: e.actorId ?? null,
+      actor_role: e.actorRole ?? null,
+      entity_type: e.entityType ?? null,
+      entity_id: e.entityId ?? null,
+      meta: e.meta ?? null,
+    };
+    let ins = await supabase.from("audit_log").insert(payload);
+    // The enrichment columns arrive via a migration. Until it is applied, drop
+    // them and insert the original five so auditing keeps working.
+    if (ins.error && /actor_id|actor_role|entity_type|entity_id|meta|schema cache/i.test(ins.error.message)) {
+      ins = await supabase.from("audit_log").insert({
+        id, who, action, entity, when_label: whenLabel, ip: null,
+      });
+    }
     if (ins.error) {
       console.warn(`[db] audit_log insert failed: ${ins.error.message}`);
       throw new Error(`audit_log insert failed: ${ins.error.message}`);
     }
-    return { id, who, action, entity, when: whenLabel };
+    return { id, who, action, entity, when: whenLabel, ...e };
   }
   const db = fileRead();
-  const row = { id, who, action, entity, when: whenLabel, ip: "10.0.1.45" };
+  // ip was previously a hardcoded "10.0.1.45" here — a fabricated address in an
+  // audit log is worse than an absent one. logAudit has no request context, so
+  // null is the honest value.
+  const row = {
+    id, who, action, entity, when: whenLabel, ip: null,
+    actorId: e.actorId ?? null, actorRole: e.actorRole ?? null,
+    entityType: e.entityType ?? null, entityId: e.entityId ?? null,
+    meta: e.meta ?? null,
+    createdAt: new Date().toISOString(),
+  };
   db.audit.unshift(row);
   fileWrite(db);
   return row;
+}
+
+// Paginated, filterable read of the audit trail — the backing query for the
+// activity-history screen.
+//
+// readAllData() deliberately keeps its own `.limit(100)` on audit_log: that
+// slice feeds the dashboard strip and the trust-accountant view, and raising it
+// would bloat /api/data for every role on every page load. This function is the
+// uncapped path, reached only through /api/audit by admin and principal.
+//
+// Returns { events, total, hasMore, actors, counts }.
+export async function listAuditEvents({
+  limit = 50, offset = 0, who, action, entityType, entityId, from, to, q,
+} = {}) {
+  const lim = Math.min(Math.max(1, Number(limit) || 50), 200);
+  const off = Math.max(0, Number(offset) || 0);
+
+  if (supabaseEnabled) {
+    const applyFilters = (query) => {
+      let out = query;
+      if (who)        out = out.eq("who", who);
+      if (action)     out = out.eq("action", action);
+      if (entityType) out = out.eq("entity_type", entityType);
+      if (entityId)   out = out.eq("entity_id", entityId);
+      if (from)       out = out.gte("created_at", from);
+      if (to)         out = out.lte("created_at", to);
+      // Free text across the three human-readable columns. ILIKE can't use an
+      // index, which is acceptable at this volume; if it bites, a pg_trgm GIN
+      // index on (action || ' ' || entity) is the fix.
+      if (q) {
+        const safe = String(q).replace(/[%,()]/g, " ").trim();
+        if (safe) out = out.or(`action.ilike.%${safe}%,entity.ilike.%${safe}%,who.ilike.%${safe}%`);
+      }
+      return out;
+    };
+
+    const sel = await applyFilters(
+      supabase.from("audit_log").select("*", { count: "exact" })
+    ).order("created_at", { ascending: false }).range(off, off + lim - 1);
+
+    if (!sel.error) {
+      const events = (sel.data || []).map(fromAuditRow);
+      const total = Number(sel.count) || events.length + off;
+      return {
+        events, total, hasMore: off + events.length < total,
+        actors: await listAuditActors(),
+        counts: await auditCounts(),
+      };
+    }
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] audit_log fell back: ${sel.error.message}`);
+  }
+
+  // File store: same filters, applied in JS.
+  const db = fileRead();
+  let all = Array.isArray(db.audit) ? db.audit : [];
+  if (who)        all = all.filter((r) => r.who === who);
+  if (action)     all = all.filter((r) => r.action === action);
+  if (entityType) all = all.filter((r) => (r.entityType || r.entity_type) === entityType);
+  if (entityId)   all = all.filter((r) => (r.entityId || r.entity_id) === entityId);
+  if (q) {
+    const needle = String(q).toLowerCase();
+    all = all.filter((r) =>
+      `${r.action || ""} ${r.entity || ""} ${r.who || ""}`.toLowerCase().includes(needle));
+  }
+  const total = all.length;
+  const events = all.slice(off, off + lim);
+  const actors = [...new Set(all.map((r) => r.who).filter(Boolean))].sort();
+  return {
+    events, total, hasMore: off + events.length < total, actors,
+    counts: {
+      total,
+      failedLogins: all.filter((r) => r.action === "Sign in failed").length,
+      financial: all.filter((r) => /paid|receipt|reminder|donation|fee/i.test(`${r.action} ${r.entity}`)).length,
+      permissions: all.filter((r) => /role|permission|user/i.test(`${r.action} ${r.entity}`)).length,
+    },
+  };
+}
+
+// Row → camelCase. Tolerates rows written before the detail columns existed.
+const fromAuditRow = (r) => r ? ({
+  id: r.id, who: r.who, action: r.action, entity: r.entity,
+  when: r.when_label, ip: r.ip ?? null,
+  actorId: r.actor_id ?? null, actorRole: r.actor_role ?? null,
+  entityType: r.entity_type ?? null, entityId: r.entity_id ?? null,
+  meta: r.meta ?? null,
+  createdAt: r.created_at ?? null,
+}) : null;
+
+// Distinct actors, so the filter dropdown reflects reality rather than a
+// hardcoded list. Capped — a school has tens of staff, not thousands.
+async function listAuditActors() {
+  if (!supabaseEnabled) return [];
+  try {
+    const sel = await supabase.from("audit_log").select("who")
+      .order("created_at", { ascending: false }).limit(2000);
+    if (sel.error) return [];
+    return [...new Set((sel.data || []).map((r) => r.who).filter(Boolean))].sort();
+  } catch { return []; }
+}
+
+// Server-side counts for the KPI tiles. Computed over the whole table, not the
+// loaded page — the old screen derived them from ≤100 rows and called it "total".
+async function auditCounts() {
+  if (!supabaseEnabled) return {};
+  const head = async (build) => {
+    try {
+      const r = await build(supabase.from("audit_log").select("*", { count: "exact", head: true }));
+      return r.error ? 0 : (Number(r.count) || 0);
+    } catch { return 0; }
+  };
+  const [total, failedLogins, financial, permissions] = await Promise.all([
+    head((q) => q),
+    head((q) => q.eq("action", "Sign in failed")),
+    head((q) => q.or("action.ilike.%fee%,action.ilike.%paid%,action.ilike.%donation%,action.ilike.%receipt%")),
+    head((q) => q.or("action.ilike.%role%,action.ilike.%permission%,action.ilike.%user%")),
+  ]);
+  return { total, failedLogins, financial, permissions };
 }
 
 export async function addActivity(row) {

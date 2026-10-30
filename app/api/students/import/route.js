@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { addStudent, seedStudentTermFees, logAudit, provisionParentLogin } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 
 // Tiny CSV parser — handles quoted cells with commas inside.
 function parseCsv(text) {
@@ -131,6 +132,8 @@ export function parseClassValue(raw) {
 }
 
 export async function POST(req) {
+  const session = await getSession();
+  const actor = session?.name || "System";
   let body; try { body = await req.json(); } catch { body = null; }
   const csv = body?.csv;
   if (typeof csv !== "string" || !csv.trim()) {
@@ -225,9 +228,13 @@ export async function POST(req) {
   }
   try {
     await logAudit(
-      "Rashmi Iyer",
+      actor,
       "Bulk import",
-      `${created.length} students added · ${logins.length} parent logins issued · ${feesIssued} fees set${feesSkipped ? ` · ${feesSkipped} fee-blank` : ""}${errors.length ? ` · ${errors.length} skipped` : ""}`
+      `${created.length} students added · ${logins.length} parent logins issued · ${feesIssued} fees set${feesSkipped ? ` · ${feesSkipped} fee-blank` : ""}${errors.length ? ` · ${errors.length} skipped` : ""}`,
+      {
+        actorId: session?.sub, actorRole: session?.role, entityType: "import",
+        meta: { students: created.length, logins: logins.length, feesIssued, feesSkipped, errors: errors.length },
+      }
     );
   } catch {}
   return NextResponse.json({

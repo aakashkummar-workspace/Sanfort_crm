@@ -154,13 +154,26 @@ create table if not exists routes (
 -- ---------- audit log ----------
 create table if not exists audit_log (
   id text primary key,
-  who text,
+  who text,               -- actor display name (kept for legacy rows)
   action text,
-  entity text,
-  when_label text,        -- pre-formatted "08:42" / "Yesterday 18:14"
+  entity text,            -- human-readable summary, e.g. "STN-4001 Priya · term1 ₹18,000"
+  when_label text,        -- pre-formatted "05 Oct 08:42"
   ip text,
   created_at timestamptz default now()
 );
+
+-- Structured half of an audit event, added alongside the human string so the
+-- log can be filtered by record rather than only by text search. Nullable and
+-- added via `alter` because `create table if not exists` above is skipped on
+-- an existing install. Rows written before this migration keep them null.
+alter table audit_log add column if not exists actor_id text;
+alter table audit_log add column if not exists actor_role text;
+alter table audit_log add column if not exists entity_type text;   -- 'student' | 'fee' | 'auth' | 'export' | ...
+alter table audit_log add column if not exists entity_id text;
+alter table audit_log add column if not exists meta jsonb;
+create index if not exists idx_audit_who on audit_log (who);
+create index if not exists idx_audit_entity on audit_log (entity_type, entity_id);
+create index if not exists idx_audit_action on audit_log (action);
 
 -- ---------- classes + sections ----------
 -- Configurable per school. Seeded with Class 1–8, sections A & B on first

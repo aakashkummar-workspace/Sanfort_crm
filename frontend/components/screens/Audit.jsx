@@ -22,6 +22,17 @@ function toneFor(action = "") {
   return "accent";
 }
 
+// The chip was printing its own CSS tone — every row read "accent", "bad" or
+// "ok", which means nothing to the person reading the log. Say what the tone
+// is actually indicating instead.
+const TONE_LABEL = {
+  bad: "Attention",
+  ok: "Completed",
+  warn: "In progress",
+  info: "Created",
+  accent: "Recorded",
+};
+
 const PAGE = 50;
 
 // Categories are a coarse first cut; the Action dropdown beside them offers
@@ -395,7 +406,9 @@ export default function ScreenAudit({ E, session }) {
                     </div>
                   )}
                 </div>
-                <span className={`chip ${toneFor(e.action)}`}><span className="dot" />{toneFor(e.action)}</span>
+                <span className={`chip ${toneFor(e.action)}`}>
+                  <span className="dot" />{TONE_LABEL[toneFor(e.action)] || "Recorded"}
+                </span>
               </div>
             ))}
           </div>

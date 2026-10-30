@@ -13,6 +13,23 @@ function fmtSize(b) {
   return `${(b / MB).toFixed(1)} MB`;
 }
 
+const CHIP_TONE = {
+  ok:     { bg: "rgba(34,139,94,0.12)",  fg: "var(--ok, #1f7a52)" },
+  warn:   { bg: "rgba(201,124,32,0.14)", fg: "var(--warn, #a66414)" },
+  muted:  { bg: "var(--bg-2)",           fg: "var(--ink-4)" },
+};
+
+function Chip({ tone = "muted", children }) {
+  const t = CHIP_TONE[tone] || CHIP_TONE.muted;
+  return (
+    <span style={{
+      fontSize: 10.5, fontWeight: 600, letterSpacing: 0.2,
+      padding: "3px 8px", borderRadius: 999,
+      background: t.bg, color: t.fg, whiteSpace: "nowrap",
+    }}>{children}</span>
+  );
+}
+
 function periodLabel(p) {
   if (!/^\d{4}-\d{2}$/.test(String(p || ""))) return p || "—";
   const [y, m] = p.split("-");
@@ -84,6 +101,14 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
   const done = rows.filter((s) => byStudent.has(s.id)).length;
   const sharedWithDonor = videos.filter((v) => v.visibleToDonor).length;
 
+  // The videos the player can step through: those of the students currently
+  // visible, in the same order the list shows them.
+  const watchable = useMemo(
+    () => rows.map((s) => byStudent.get(s.id)).filter(Boolean),
+    [rows, byStudent]
+  );
+  const playIndex = playing ? watchable.findIndex((v) => v.id === playing.id) : -1;
+
   async function setVisibility(video, patch) {
     try {
       const r = await fetch(`/api/progress-videos/${video.id}`, {
@@ -117,12 +142,6 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
         <KPI label="Students" value={rows.length} sub={cls === "all" ? "All classes" : formatClassLabel(cls)} />
         <KPI label={`Uploaded · ${periodLabel(period)}`} value={done} sub={`of ${rows.length}`} />
         <KPI label="Shared with donors" value={sharedWithDonor} sub="this month" />
-        <KPI
-          label="Storage free"
-          value={disk ? `${(disk.freeBytes / (1024 * MB)).toFixed(1)} GB` : "—"}
-          sub={disk ? `of ${(disk.totalBytes / (1024 * MB)).toFixed(0)} GB` : "unknown"}
-          tone={lowDisk ? "warn" : undefined}
-        />
       </div>
 
       {lowDisk && (
@@ -184,47 +203,42 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
                     </div>
                   </div>
 
+                  {/* Who can see it reads as a status, not two form controls.
+                      Changing it is rare; knowing it at a glance is not, and a
+                      checkbox per row for a rarely-touched setting is what made
+                      this list hard to scan. Both toggles live in the player. */}
                   {v ? (
                     <>
-                      <div style={{ fontSize: 11, color: "var(--ink-4)", textAlign: "right", minWidth: 120 }}>
-                        {fmtSize(v.sizeBytes)}
-                        <div>by {v.uploadedBy || "—"}</div>
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 6,
+                        flexShrink: 0,
+                      }}>
+                        <Chip tone="ok">Parents</Chip>
+                        {v.visibleToDonor && <Chip tone="warn">Donor</Chip>}
+                        {v.visibleToParent === false && !v.visibleToDonor && (
+                          <Chip tone="muted">Hidden</Chip>
+                        )}
                       </div>
 
-                      <label title="Parents can watch this video"
-                        style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: canManage ? "pointer" : "default" }}>
-                        <input type="checkbox" checked={v.visibleToParent !== false} disabled={!canManage}
-                          onChange={(e) => setVisibility(v, { visibleToParent: e.target.checked })} />
-                        Parent
-                      </label>
+                      <div style={{
+                        fontSize: 11, color: "var(--ink-4)",
+                        textAlign: "right", flexShrink: 0, whiteSpace: "nowrap",
+                      }}>
+                        {fmtSize(v.sizeBytes)} · {v.uploadedBy || "—"}
+                      </div>
 
-                      {/* Donor access is per video and off by default. A sponsor
-                          is a third party and the family has not been told the
-                          sponsorship exists, so this stays a deliberate tick. */}
-                      <label title="Sponsoring donor can watch this video"
-                        style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, cursor: canManage ? "pointer" : "default" }}>
-                        <input type="checkbox" checked={v.visibleToDonor === true} disabled={!canManage}
-                          onChange={(e) => setVisibility(v, { visibleToDonor: e.target.checked })} />
-                        Donor
-                      </label>
-
-                      <button className="btn sm ghost" onClick={() => setPlaying(v)}>
+                      <button className="btn sm ghost" style={{ flexShrink: 0 }}
+                        onClick={() => setPlaying(v)}>
                         <Icon name="play" size={12} />Watch
                       </button>
-                      <button className="btn sm ghost" onClick={() => setUploadFor(s)}>
-                        <Icon name="upload" size={12} />Replace
-                      </button>
-                      {canManage && (
-                        <button className="btn sm ghost" onClick={() => remove(v)}
-                          style={{ color: "var(--err)" }}>
-                          <Icon name="x" size={12} />
-                        </button>
-                      )}
                     </>
                   ) : (
                     <>
-                      <span style={{ fontSize: 11, color: "var(--ink-4)" }}>Not uploaded</span>
-                      <button className="btn sm accent" onClick={() => setUploadFor(s)}>
+                      <span style={{ fontSize: 11.5, color: "var(--ink-4)", flexShrink: 0 }}>
+                        Not uploaded
+                      </span>
+                      <button className="btn sm accent" style={{ flexShrink: 0 }}
+                        onClick={() => setUploadFor(s)}>
                         <Icon name="upload" size={12} />Upload
                       </button>
                     </>
@@ -254,8 +268,30 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
       )}
 
       {playing && (
-        <PlayerModal video={playing} student={students.find((s) => s.id === playing.studentId)}
-          onClose={() => setPlaying(null)} />
+        <PlayerModal
+          video={videos.find((v) => v.id === playing.id) || playing}
+          student={students.find((s) => s.id === playing.studentId)}
+          canManage={canManage}
+          // Step through the videos in the order they appear on screen, so
+          // next/previous follows the current filter and sort rather than
+          // some hidden ordering of its own.
+          position={playIndex >= 0 ? { at: playIndex + 1, of: watchable.length } : null}
+          onPrev={playIndex > 0 ? () => setPlaying(watchable[playIndex - 1]) : null}
+          onNext={playIndex >= 0 && playIndex < watchable.length - 1
+            ? () => setPlaying(watchable[playIndex + 1]) : null}
+          onVisibility={setVisibility}
+          onReplace={() => {
+            const s = students.find((x) => x.id === playing.studentId);
+            setPlaying(null);
+            if (s) setUploadFor(s);
+          }}
+          onDelete={async () => {
+            const v = playing;
+            setPlaying(null);
+            await remove(v);
+          }}
+          onClose={() => setPlaying(null)}
+        />
       )}
     </div>
   );
@@ -407,7 +443,24 @@ function UploadModal({ student, period, existing, onClose, onDone }) {
   );
 }
 
-function PlayerModal({ video, student, onClose }) {
+// The player is also where a video is managed. Visibility, replace and delete
+// live here rather than on every list row: they are occasional actions, and
+// putting six controls on each of 277 rows is what made the list unreadable.
+function PlayerModal({
+  video, student, canManage, position, onPrev, onNext,
+  onVisibility, onReplace, onDelete, onClose,
+}) {
+  // Arrow keys step through the month without reaching for the mouse — the
+  // point of this screen is reviewing many videos in a sitting.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "ArrowLeft" && onPrev) onPrev();
+      if (e.key === "ArrowRight" && onNext) onNext();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onPrev, onNext]);
+
   return (
     <div onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.6)",
@@ -420,12 +473,31 @@ function PlayerModal({ video, student, onClose }) {
             <div className="card-sub">
               {periodLabel(video.period)}
               {video.title ? ` · ${video.title}` : ""}
+              {position ? ` · ${position.at} of ${position.of}` : ""}
             </div>
           </div>
-          <button className="icon-btn" onClick={onClose}><Icon name="x" size={14} /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button className="icon-btn" onClick={onPrev || undefined} disabled={!onPrev}
+              title="Previous student (←)"
+              style={{ opacity: onPrev ? 1 : 0.35, cursor: onPrev ? "pointer" : "default" }}>
+              <Icon name="arrowLeft" size={14} />
+            </button>
+            <button className="icon-btn" onClick={onNext || undefined} disabled={!onNext}
+              title="Next student (→)"
+              style={{ opacity: onNext ? 1 : 0.35, cursor: onNext ? "pointer" : "default" }}>
+              <Icon name="arrowRight" size={14} />
+            </button>
+            <button className="icon-btn" onClick={onClose} title="Close">
+              <Icon name="x" size={14} />
+            </button>
+          </div>
         </div>
         <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+          {/* Keyed on the video id: without it React reuses the same element
+              when stepping to the next student and the previous video keeps
+              playing behind the new metadata. */}
           <video
+            key={video.id}
             src={`/api/progress-videos/${video.id}?play=1`}
             controls playsInline preload="metadata"
             style={{ width: "100%", borderRadius: 8, background: "#000", maxHeight: "60vh" }}
@@ -436,6 +508,53 @@ function PlayerModal({ video, student, onClose }) {
           <div style={{ fontSize: 11, color: "var(--ink-4)" }}>
             {fmtSize(video.sizeBytes)} · uploaded by {video.uploadedBy || "—"}
             {video.uploadedAt ? ` on ${new Date(video.uploadedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : ""}
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--rule)", paddingTop: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{
+              fontSize: 11, fontWeight: 500, color: "var(--ink-2)",
+              textTransform: "uppercase", letterSpacing: 0.4,
+            }}>Who can watch this</div>
+
+            <label style={{
+              display: "flex", alignItems: "center", gap: 8, fontSize: 12.5,
+              cursor: canManage ? "pointer" : "default", opacity: canManage ? 1 : 0.65,
+            }}>
+              <input type="checkbox" checked={video.visibleToParent !== false} disabled={!canManage}
+                onChange={(e) => onVisibility?.(video, { visibleToParent: e.target.checked })} />
+              Parents
+            </label>
+
+            {/* Off by default. A sponsor is a third party and the family has
+                not been told the sponsorship exists, so this stays a
+                deliberate tick with the consequence spelled out. */}
+            <label style={{
+              display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5,
+              cursor: canManage ? "pointer" : "default", opacity: canManage ? 1 : 0.65,
+            }}>
+              <input type="checkbox" checked={video.visibleToDonor === true} disabled={!canManage}
+                onChange={(e) => onVisibility?.(video, { visibleToDonor: e.target.checked })}
+                style={{ marginTop: 2 }} />
+              <span>
+                Sponsoring donor
+                <span style={{ display: "block", fontSize: 11, color: "var(--ink-4)", lineHeight: 1.5 }}>
+                  The sponsor will see this child on video. The family has not been told.
+                </span>
+              </span>
+            </label>
+
+            {/* Replace is available to anyone who may upload; deleting a
+                child's video is admin/principal only. */}
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 2 }}>
+              <button className="btn sm ghost" onClick={onReplace}>
+                <Icon name="upload" size={12} />Replace video
+              </button>
+              {canManage && (
+                <button className="btn sm ghost" onClick={onDelete} style={{ color: "var(--err)" }}>
+                  <Icon name="x" size={12} />Delete
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

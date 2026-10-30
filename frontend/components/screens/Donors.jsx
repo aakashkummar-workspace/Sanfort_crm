@@ -89,6 +89,33 @@ export default function ScreenDonors({ E, refresh, role, session }) {
   const [lastReceipt, setLastReceipt] = useState(null); // freshly generated receipt to preview
   const [viewingReceiptsFor, setViewingReceiptsFor] = useState(null); // donor whose receipts list is open, or "*" for all
   const [toast, setToast] = useState(null);
+  // Per-row donor link. Issuing one revokes any previous link for that donor,
+  // so "send them a new one" also means the old one stops working.
+  const [linkBusy, setLinkBusy] = useState(null);
+  const [donorLink, setDonorLink] = useState(null);
+
+  async function makeDonorLink(d) {
+    if (linkBusy) return;
+    setLinkBusy(d.id);
+    try {
+      const r = await fetch("/api/donors/access-link", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ donorId: d.id }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || "Failed to create link");
+      setDonorLink({
+        donor: d,
+        url: `${window.location.origin}/api/donor-access?t=${j.token}`,
+        expiresAt: j.link?.expiresAt || null,
+        revokedPrevious: j.revokedPrevious || 0,
+      });
+    } catch (e) {
+      showToast(e.message || "Failed to create link", "err");
+    }
+    setLinkBusy(null);
+  }
 
   const donors    = E.DONORS || [];
   const campaigns = E.CAMPAIGNS || [];
@@ -538,6 +565,14 @@ export default function ScreenDonors({ E, refresh, role, session }) {
                               </button>
                             );
                           })()}
+                          <button
+                            className="btn sm ghost"
+                            title={`Create a link ${d.name} can open to see the students they sponsor`}
+                            disabled={linkBusy === d.id}
+                            onClick={() => makeDonorLink(d)}
+                          >
+                            <Icon name="link" size={12} />{linkBusy === d.id ? "Creating…" : "Share link"}
+                          </button>
                           <button className="icon-btn" onClick={() => handleRemove(d)} title="Remove"><Icon name="x" size={12} /></button>
                         </div>
                       </td>
@@ -643,8 +678,127 @@ export default function ScreenDonors({ E, refresh, role, session }) {
         />
       )}
 
+      {donorLink && (
+        <DonorLinkModal link={donorLink} onClose={() => setDonorLink(null)} onToast={showToast} />
+      )}
+
       <Toast msg={toast?.msg} tone={toast?.tone} onClose={() => setToast(null)} />
     </div>
+  );
+}
+
+// Shown once, right after a link is issued. The link cannot be redisplayed
+// later — only its hash is stored — so this is the moment to copy or send it.
+function DonorLinkModal({ link, onClose, onToast }) {
+  const message = [
+    "You can now see the progress of the student you support.",
+    "",
+    link.url,
+    "",
+    "Just open the link — no password needed.",
+    "Please keep it private and do not forward it.",
+  ].join("\n");
+
+  const expiry = link.expiresAt
+    ? new Date(link.expiresAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+    : null;
+
+  async function copyText(text, okMsg) {
+    try {
+      await navigator.clipboard.writeText(text);
+      onToast?.(okMsg, "ok");
+    } catch {
+      onToast?.("Could not copy — select the text and copy it manually", "err");
+    }
+  }
+
+  const waHref = `https://wa.me/${String(link.donor.phone || "").replace(/\D/g, "")}?text=${encodeURIComponent(message)}`;
+  const mailHref = `mailto:${encodeURIComponent(link.donor.email || "")}?subject=${encodeURIComponent("Your sponsor link")}&body=${encodeURIComponent(message)}`;
+
+  return (
+    <ModalShell title={`Link for ${link.donor.name}`} onClose={onClose} width={560}>
+      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+        <div style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.65 }}>
+          Anyone holding this link can see the students allocated to{" "}
+          {link.donor.name}, so it should not be forwarded or posted anywhere.
+          {link.revokedPrevious ? " Any earlier link for this donor has stopped working." : ""}
+        </div>
+
+        {/* The link itself, on its own, in a field wide enough to wrap at a
+            readable size. Keeping it out of the message blob is the whole
+            point: a URL buried in prose wraps mid-token and reads as noise. */}
+        <div>
+          <div style={{
+            display: "flex", alignItems: "baseline", justifyContent: "space-between",
+            gap: 8, marginBottom: 5,
+          }}>
+            <span style={{
+              fontSize: 11, fontWeight: 500, color: "var(--ink-2)",
+              textTransform: "uppercase", letterSpacing: 0.4,
+            }}>Sponsor link</span>
+            {expiry && (
+              <span style={{ fontSize: 11, color: "var(--ink-4)" }}>
+                Expires {expiry}
+              </span>
+            )}
+          </div>
+          <div style={{
+            display: "flex", alignItems: "stretch", gap: 8,
+            padding: 9, background: "var(--bg-2)",
+            border: "1px solid var(--rule)", borderRadius: 8,
+          }}>
+            <div style={{
+              flex: 1, minWidth: 0, alignSelf: "center",
+              fontFamily: "var(--font-mono)", fontSize: 11.5,
+              lineHeight: 1.55, color: "var(--ink-1)",
+              overflowWrap: "anywhere", wordBreak: "break-word",
+            }}>{link.url}</div>
+            <button className="btn sm ghost" style={{ flexShrink: 0, alignSelf: "center" }}
+              onClick={() => copyText(link.url, "Link copied")}>
+              <Icon name="copy" size={12} />Copy
+            </button>
+          </div>
+        </div>
+
+        {/* The ready-to-send wording, with the link shown in place so what is
+            copied is what the donor will read. */}
+        <div>
+          <div style={{
+            fontSize: 11, fontWeight: 500, color: "var(--ink-2)",
+            textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 5,
+          }}>Message to send</div>
+          <div style={{
+            padding: "11px 13px", background: "var(--bg-2)",
+            border: "1px solid var(--rule)", borderRadius: 8,
+            fontSize: 12, color: "var(--ink-1)",
+            whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+            lineHeight: 1.65,
+          }}>{message}</div>
+        </div>
+
+        <div style={{
+          display: "flex", gap: 8, flexWrap: "wrap",
+          borderTop: "1px solid var(--rule)", paddingTop: 13,
+        }}>
+          <button className="btn sm accent" onClick={() => copyText(message, "Message copied — paste it to the donor")}>
+            <Icon name="copy" size={12} />Copy message
+          </button>
+          <a className="btn sm ghost" target="_blank" rel="noopener noreferrer" href={waHref}>
+            <Icon name="whatsapp" size={12} />WhatsApp
+          </a>
+          <a className="btn sm ghost" href={mailHref}>
+            <Icon name="mail" size={12} />Email
+          </a>
+        </div>
+
+        <div style={{ fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.6 }}>
+          This link will not be shown again. If it is lost, create a new one from
+          the donor row — doing so stops the old link working.
+        </div>
+
+      </div>
+    </ModalShell>
   );
 }
 

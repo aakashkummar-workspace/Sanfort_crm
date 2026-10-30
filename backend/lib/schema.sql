@@ -1416,3 +1416,25 @@ create table if not exists payslips (
 create index if not exists idx_payslips_run on payslips (run_id);
 create index if not exists idx_payslips_staff on payslips (staff_id, period desc);
 alter table payslips enable row level security;
+
+-- ---------- donor_access_links -----------------------------------------
+-- One-click sign-in links for donors. Holding the link is holding the
+-- credential, so the exposure is bounded: links expire, can be revoked, and
+-- every use is recorded. Scoped to the donor role only — no other role gets
+-- passwordless entry. The token is stored hashed, so this table leaking does
+-- not yield a working link.
+create table if not exists donor_access_links (
+  id          text primary key,
+  donor_id    text not null,
+  user_id     text not null,
+  token_hash  text not null unique,
+  created_by  text,
+  created_at  timestamptz default now(),
+  expires_at  timestamptz not null,
+  revoked_at  timestamptz,
+  last_used_at timestamptz,
+  use_count   int default 0
+);
+create index if not exists idx_dal_donor on donor_access_links (donor_id);
+create index if not exists idx_dal_token on donor_access_links (token_hash);
+alter table donor_access_links enable row level security;

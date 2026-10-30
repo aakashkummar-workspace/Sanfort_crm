@@ -38,7 +38,17 @@ async function evoPost(path, body) {
     clearTimeout(timer);
     const text = await res.text().catch(() => "");
     if (!res.ok) {
-      return { ok: false, status: res.status, raw: text.slice(0, 2000) };
+      // Carry a readable reason, not just the status. Everything upstream —
+      // the log row, the audit line, the diagnostic panel — reads `.error`,
+      // so a failure that set only `.status` arrived as an unexplained
+      // false and got rendered as "Delivered to the provider".
+      const snippet = text.trim().slice(0, 300);
+      return {
+        ok: false,
+        status: res.status,
+        error: `Evolution returned HTTP ${res.status}${snippet ? `: ${snippet}` : ""}`,
+        raw: text.slice(0, 2000),
+      };
     }
     // The old code read the body as text and discarded it. Evolution returns
     // the WhatsApp message id at key.id — without it a future delivery-receipt

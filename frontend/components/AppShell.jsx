@@ -54,6 +54,8 @@ import ScreenRemarksRewards from "./screens/RemarksRewards";
 import ScreenGovernmentDocuments from "./screens/GovernmentDocuments";
 import ScreenStudentActivities from "./screens/StudentActivities";
 import ScreenPrograms from "./screens/Programs";
+import ScreenProgressVideos from "./screens/ProgressVideos";
+import ScreenMyProgressVideos from "./screens/MyProgressVideos";
 import ScreenCustomRoles from "./screens/CustomRoles";
 import ScreenMessages from "./screens/Messages";
 import ScreenClassProgress from "./screens/ClassProgress";
@@ -105,6 +107,8 @@ const SCREENS = {
   government_documents: ScreenGovernmentDocuments,
   student_activities: ScreenStudentActivities,
   programs: ScreenPrograms,
+  progress_videos: ScreenProgressVideos,
+  my_progress_videos: ScreenMyProgressVideos,
   custom_roles: ScreenCustomRoles,
   messages: ScreenMessages,
   class_progress: ScreenClassProgress,

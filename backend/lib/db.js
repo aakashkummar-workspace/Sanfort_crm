@@ -6142,6 +6142,320 @@ export async function activeSponsoredStudentIds(donorId) {
   }
 }
 
+// ---------- student progress videos ----------
+// Metadata only. The bytes live on disk under MEDIA_ROOT; see lib/media.js
+// for why, and for the path-escape guard every read goes through.
+//
+// Like donorSponsorships, these are deliberately absent from runBatched and
+// readAllData: the list grows without bound and has no business riding along
+// in every bootstrap payload. Paginated route only.
+
+const fromProgressVideo = (r) => r ? ({
+  id: r.id,
+  studentId: r.student_id ?? r.studentId,
+  period: r.period,
+  title: r.title ?? null,
+  note: r.note ?? null,
+  storageKey: r.storage_key ?? r.storageKey,
+  mimeType: r.mime_type ?? r.mimeType ?? null,
+  sizeBytes: r.size_bytes ?? r.sizeBytes ?? null,
+  durationSec: r.duration_sec ?? r.durationSec ?? null,
+  originalName: r.original_name ?? r.originalName ?? null,
+  uploadedBy: r.uploaded_by ?? r.uploadedBy ?? null,
+  uploadedById: r.uploaded_by_id ?? r.uploadedById ?? null,
+  uploadedAt: r.uploaded_at ?? r.uploadedAt ?? null,
+  visibleToParent: (r.visible_to_parent ?? r.visibleToParent) !== false,
+  visibleToDonor: (r.visible_to_donor ?? r.visibleToDonor) === true,
+  status: r.status ?? "ready",
+  removedAt: r.removed_at ?? r.removedAt ?? null,
+  removedBy: r.removed_by ?? r.removedBy ?? null,
+}) : null;
+
+export function newProgressVideoId() {
+  return `VID-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+}
+
+// The row for one student+month, whatever its visibility. Used by the upload
+// route to find the file it is about to replace.
+export async function getProgressVideoFor(studentId, period) {
+  if (!studentId || !period) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("student_progress_videos").select("*")
+      .eq("student_id", studentId).eq("period", period).maybeSingle();
+    if (!sel.error) return sel.data ? fromProgressVideo(sel.data) : null;
+    if (!isSchemaMissError(sel.error)) throw new Error(sel.error.message);
+  }
+  const db = fileRead();
+  const row = (db.progressVideos || []).find(
+    (v) => v.studentId === studentId && v.period === period
+  );
+  return row || null;
+}
+
+export async function getProgressVideo(id) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("student_progress_videos").select("*").eq("id", id).maybeSingle();
+    if (!sel.error) return sel.data ? fromProgressVideo(sel.data) : null;
+    if (!isSchemaMissError(sel.error)) throw new Error(sel.error.message);
+  }
+  const db = fileRead();
+  return (db.progressVideos || []).find((v) => v.id === id) || null;
+}
+
+// Upsert on (student_id, period) — re-uploading a month replaces that month
+// rather than accumulating duplicates. The CALLER deletes the superseded file
+// after this resolves; doing it here would orphan bytes if the write failed.
+export async function saveProgressVideo(v = {}) {
+  if (!v.studentId) throw new Error("studentId required");
+  if (!/^\d{4}-\d{2}$/.test(String(v.period || ""))) throw new Error("period must be YYYY-MM");
+  if (!v.storageKey) throw new Error("storageKey required");
+
+  const id = v.id || newProgressVideoId();
+  const row = {
+    id,
+    student_id: v.studentId,
+    period: v.period,
+    title: v.title ? String(v.title).slice(0, 200) : null,
+    note: v.note ? String(v.note).slice(0, 2000) : null,
+    storage_key: v.storageKey,
+    mime_type: v.mimeType || null,
+    size_bytes: v.sizeBytes ?? null,
+    duration_sec: v.durationSec ?? null,
+    original_name: v.originalName ? String(v.originalName).slice(0, 255) : null,
+    uploaded_by: v.uploadedBy || null,
+    uploaded_by_id: v.uploadedById || null,
+    uploaded_at: new Date().toISOString(),
+    visible_to_parent: v.visibleToParent !== false,
+    visible_to_donor: v.visibleToDonor === true,
+    status: "ready",
+    removed_at: null,
+    removed_by: null,
+  };
+
+  if (supabaseEnabled) {
+    const up = await supabase.from("student_progress_videos")
+      .upsert(row, { onConflict: "student_id,period" }).select().single();
+    if (!up.error) return fromProgressVideo(up.data);
+    if (!isSchemaMissError(up.error)) throw new Error(up.error.message);
+  }
+
+  const db = fileRead();
+  if (!Array.isArray(db.progressVideos)) db.progressVideos = [];
+  const local = fromProgressVideo(row);
+  const i = db.progressVideos.findIndex(
+    (x) => x.studentId === v.studentId && x.period === v.period
+  );
+  if (i >= 0) db.progressVideos[i] = local; else db.progressVideos.unshift(local);
+  fileWrite(db);
+  return local;
+}
+
+// Visibility toggles. Separated from saveProgressVideo so flipping donor
+// access never touches the file or the upload metadata.
+export async function setProgressVideoVisibility(id, { visibleToParent, visibleToDonor } = {}) {
+  if (!id) throw new Error("id required");
+  const patch = {};
+  if (typeof visibleToParent === "boolean") patch.visible_to_parent = visibleToParent;
+  if (typeof visibleToDonor === "boolean") patch.visible_to_donor = visibleToDonor;
+  if (!Object.keys(patch).length) return await getProgressVideo(id);
+
+  if (supabaseEnabled) {
+    const upd = await supabase.from("student_progress_videos")
+      .update(patch).eq("id", id).select().maybeSingle();
+    if (!upd.error) return upd.data ? fromProgressVideo(upd.data) : null;
+    if (!isSchemaMissError(upd.error)) throw new Error(upd.error.message);
+  }
+  const db = fileRead();
+  const row = (db.progressVideos || []).find((v) => v.id === id);
+  if (!row) return null;
+  if (typeof visibleToParent === "boolean") row.visibleToParent = visibleToParent;
+  if (typeof visibleToDonor === "boolean") row.visibleToDonor = visibleToDonor;
+  fileWrite(db);
+  return row;
+}
+
+// Hard delete of the row. The caller removes the file — a video someone asked
+// to have deleted should not leave bytes behind on disk.
+export async function removeProgressVideo(id, actor) {
+  if (!id) throw new Error("id required");
+  const existing = await getProgressVideo(id);
+  if (!existing) return null;
+  if (supabaseEnabled) {
+    const del = await supabase.from("student_progress_videos").delete().eq("id", id);
+    if (del.error && !isSchemaMissError(del.error)) throw new Error(del.error.message);
+    if (!del.error) return existing;
+  }
+  const db = fileRead();
+  db.progressVideos = (db.progressVideos || []).filter((v) => v.id !== id);
+  fileWrite(db);
+  return existing;
+}
+
+// List videos. `audience` applies the visibility rule at the DATA layer rather
+// than trusting each caller to filter: "parent" and "donor" can never see a
+// row whose flag is off, whatever query they send.
+export async function listProgressVideos({
+  studentId, studentIds, period, audience = "staff", limit = 200, offset = 0,
+} = {}) {
+  const ids = Array.isArray(studentIds) ? studentIds.filter(Boolean) : null;
+  // An audience scoped to a list of students with no students sees nothing.
+  // Without this an empty array would fall through to "no filter" and list
+  // the whole school.
+  if (ids && ids.length === 0) return { videos: [], total: 0, hasMore: false };
+
+  if (supabaseEnabled) {
+    let q = supabase.from("student_progress_videos")
+      .select("*", { count: "exact" })
+      .eq("status", "ready")
+      .order("period", { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (studentId) q = q.eq("student_id", studentId);
+    if (ids) q = q.in("student_id", ids);
+    if (period) q = q.eq("period", period);
+    if (audience === "parent") q = q.eq("visible_to_parent", true);
+    if (audience === "donor") q = q.eq("visible_to_donor", true);
+    const sel = await q;
+    if (!sel.error) {
+      const total = sel.count ?? (sel.data || []).length;
+      return {
+        videos: (sel.data || []).map(fromProgressVideo),
+        total,
+        hasMore: offset + (sel.data || []).length < total,
+      };
+    }
+    if (!isSchemaMissError(sel.error)) {
+      console.warn(`[db] student_progress_videos fell back: ${sel.error.message}`);
+    }
+  }
+
+  const db = fileRead();
+  let all = Array.isArray(db.progressVideos) ? db.progressVideos : [];
+  all = all.filter((v) => (v.status || "ready") === "ready");
+  if (studentId) all = all.filter((v) => v.studentId === studentId);
+  if (ids) all = all.filter((v) => ids.includes(v.studentId));
+  if (period) all = all.filter((v) => v.period === period);
+  if (audience === "parent") all = all.filter((v) => v.visibleToParent !== false);
+  if (audience === "donor") all = all.filter((v) => v.visibleToDonor === true);
+  all.sort((a, b) => String(b.period).localeCompare(String(a.period)));
+  const total = all.length;
+  return { videos: all.slice(offset, offset + limit), total, hasMore: offset + limit < total };
+}
+
+// ---------- donor access links ----------
+// A link that signs a donor in without a password. Holding the link IS the
+// credential, so the blast radius is kept small: it expires, it can be revoked,
+// and every use is stamped. Only the donor role is reachable this way.
+const LINK_TTL_DAYS = 30;
+
+const sha256 = (s) => require("crypto").createHash("sha256").update(String(s)).digest("hex");
+
+const fromAccessLink = (r) => r ? ({
+  id: r.id,
+  donorId: r.donor_id ?? r.donorId,
+  userId: r.user_id ?? r.userId,
+  createdBy: r.created_by ?? r.createdBy ?? null,
+  createdAt: r.created_at ?? r.createdAt ?? null,
+  expiresAt: r.expires_at ?? r.expiresAt ?? null,
+  revokedAt: r.revoked_at ?? r.revokedAt ?? null,
+  lastUsedAt: r.last_used_at ?? r.lastUsedAt ?? null,
+  useCount: r.use_count ?? r.useCount ?? 0,
+}) : null;
+
+// Returns { token, link } — the raw token is shown once and never stored.
+export async function createDonorAccessLink({ donorId, userId, createdBy, days = LINK_TTL_DAYS } = {}) {
+  if (!donorId) throw new Error("donorId required");
+  if (!userId) throw new Error("userId required");
+  const token = require("crypto").randomBytes(32).toString("base64url");
+  const id = `DAL-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  const row = {
+    id, donor_id: donorId, user_id: userId, token_hash: sha256(token),
+    created_by: createdBy || null, expires_at: expiresAt,
+  };
+  if (supabaseEnabled) {
+    const ins = await supabase.from("donor_access_links").insert(row).select().single();
+    if (!ins.error) return { token, link: fromAccessLink(ins.data) };
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.donorAccessLinks)) db.donorAccessLinks = [];
+  const local = { id, donorId, userId, tokenHash: row.token_hash, createdBy: createdBy || null,
+    createdAt: new Date().toISOString(), expiresAt, revokedAt: null, lastUsedAt: null, useCount: 0 };
+  db.donorAccessLinks.unshift(local);
+  fileWrite(db);
+  return { token, link: local };
+}
+
+// Resolve a raw token to the user it signs in as. Returns null for anything
+// unknown, expired or revoked — the caller must not distinguish between those
+// cases to a visitor.
+export async function redeemDonorAccessLink(token) {
+  if (!token) return null;
+  const hash = sha256(token);
+  let row = null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("donor_access_links").select("*").eq("token_hash", hash).maybeSingle();
+    if (!sel.error && sel.data) row = fromAccessLink(sel.data);
+    else if (sel.error && !isSchemaMissError(sel.error)) return null;
+  }
+  if (!row) {
+    const db = fileRead();
+    row = (db.donorAccessLinks || []).find((l) => l.tokenHash === hash) || null;
+  }
+  if (!row) return null;
+  if (row.revokedAt) return null;
+  if (row.expiresAt && new Date(row.expiresAt).getTime() < Date.now()) return null;
+
+  const user = await getUserById(row.userId);
+  if (!user || user.role !== "donor") return null;   // the link only ever opens a donor session
+
+  // Best-effort usage stamp; a failure here must not block a valid sign-in.
+  const now = new Date().toISOString();
+  try {
+    if (supabaseEnabled) {
+      await supabase.from("donor_access_links")
+        .update({ last_used_at: now, use_count: (row.useCount || 0) + 1 }).eq("id", row.id);
+    } else {
+      const db = fileRead();
+      const l = (db.donorAccessLinks || []).find((x) => x.id === row.id);
+      if (l) { l.lastUsedAt = now; l.useCount = (l.useCount || 0) + 1; fileWrite(db); }
+    }
+  } catch {}
+  return { user, link: row };
+}
+
+export async function listDonorAccessLinks(donorId) {
+  if (supabaseEnabled) {
+    let q = supabase.from("donor_access_links").select("*").order("created_at", { ascending: false }).limit(50);
+    if (donorId) q = q.eq("donor_id", donorId);
+    const sel = await q;
+    if (!sel.error) return (sel.data || []).map(fromAccessLink);
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] donor_access_links fell back: ${sel.error.message}`);
+  }
+  const db = fileRead();
+  let all = Array.isArray(db.donorAccessLinks) ? db.donorAccessLinks : [];
+  if (donorId) all = all.filter((l) => l.donorId === donorId);
+  return all;
+}
+
+export async function revokeDonorAccessLinks(donorId, actor) {
+  const now = new Date().toISOString();
+  if (supabaseEnabled) {
+    const upd = await supabase.from("donor_access_links")
+      .update({ revoked_at: now }).eq("donor_id", donorId).is("revoked_at", null).select();
+    if (!upd.error) return (upd.data || []).length;
+    if (!isSchemaMissError(upd.error)) throw new Error(upd.error.message);
+  }
+  const db = fileRead();
+  let n = 0;
+  for (const l of db.donorAccessLinks || []) {
+    if (l.donorId === donorId && !l.revokedAt) { l.revokedAt = now; n++; }
+  }
+  if (n) fileWrite(db);
+  return n;
+}
+
 // ---------- campaigns ----------
 export async function addCampaign(row) {
   const id = row.id || `CMP-${Date.now().toString(36).toUpperCase()}`;
@@ -8119,7 +8433,7 @@ export async function setUserPassword(id, passwordHash) {
 }
 
 // Look up a user by id. Used internally for atomic add/remove operations.
-async function getUserById(id) {
+export async function getUserById(id) {
   if (!id) return null;
   if (supabaseEnabled) {
     const r = await supabase.from("users").select("*").eq("id", id).maybeSingle();

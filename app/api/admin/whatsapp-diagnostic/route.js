@@ -55,7 +55,9 @@ export async function POST(req) {
     await logAudit(
       session.name || "Admin",
       "WhatsApp diagnostic test",
-      `phone=${phone} · ok=${!!result.ok}${result.skipped ? ` · skipped=${result.skipped}` : ""}${result.error ? ` · err=${result.error}` : ""}`
+      `phone=${phone} · ok=${!!result.ok}${result.skipped ? ` · skipped=${result.skipped}` : ""}${
+        result.error ? ` · err=${result.error}` : result.ok ? "" : ` · err=no reason given${result.status ? ` (HTTP ${result.status})` : ""}`
+      }`
     );
   } catch {}
   return NextResponse.json({ ok: true, result, env: whatsappEnvStatus() });

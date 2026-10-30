@@ -21,6 +21,10 @@ const PUBLIC_PATHS = [
   // staff to review on the Admissions screen.
   "/admissionform",
   "/api/admissions/public",
+  // Donor one-click access link. Public by necessity — the donor following it
+  // has no session yet. The route itself validates the token, which expires
+  // and is revocable, and will only ever open a session for a donor account.
+  "/api/donor-access",
 ];
 
 function isPublic(pathname) {

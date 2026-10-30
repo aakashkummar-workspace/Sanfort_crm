@@ -168,7 +168,17 @@ export default function ScreenWhatsApp({ E, session }) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.error || "Test send failed");
-      setTestResult({ ok: !!j.result?.ok, detail: j.result?.skipped || j.result?.error || "Delivered to the provider" });
+      // Pick the wording from the outcome first, never from whichever
+      // field happens to be populated. A provider that fails without
+      // setting `error` must still read as a failure here.
+      const sent = !!j.result?.ok;
+      const reason = j.result?.error || j.result?.skipped
+        || (j.result?.status ? `Provider returned HTTP ${j.result.status}` : "")
+        || "The provider rejected the message without giving a reason";
+      setTestResult({
+        ok: sent,
+        detail: sent ? "Delivered to the provider" : reason,
+      });
       // The test wrote its own log row; show it.
       load(0); loadDiag();
     } catch (e) {

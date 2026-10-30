@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { readAllData } from "@/lib/db";
+import { readAllData, activeSponsoredStudentIds } from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import AppShell from "@/components/AppShell";
 
@@ -108,6 +108,51 @@ export default async function Page() {
         const blob = `${a.action || ""} ${a.entity || ""}`.toLowerCase();
         return /donor|donation|trust|expense|campaign|receipt/.test(blob);
       }),
+    };
+  }
+
+  // Donor: the server-rendered payload must be cut to their sponsored students
+  // before it reaches the browser. This page builds its own payload from
+  // readAllData() and does NOT go through scopeForRole in /api/data — so a
+  // role added there alone still ships the entire school in the first paint.
+  // That is how a donor briefly saw all 292 students. Mirror the API's
+  // allowlist exactly: build each student field by field rather than spreading
+  // and deleting, so a future column cannot leak in.
+  if (session.role === "donor") {
+    let ids = [];
+    try {
+      if (session.linkedId) ids = await activeSponsoredStudentIds(session.linkedId);
+    } catch {}
+    const mine = new Set(ids);
+    const sponsored = (db.addedStudents || []).filter((s) => mine.has(s.id));
+    E = {
+      ...E,
+      ADDED_STUDENTS: sponsored.map((s) => ({
+        id: s.id, name: s.name, cls: s.cls,
+        attendance: s.attendance ?? 0, joined: s.joined ?? null,
+      })),
+      ARCHIVED_STUDENTS: [],
+      MARKS: (E.MARKS || []).filter((m) => mine.has(m.studentId)),
+      STUDENT_ACTIVITIES: (E.STUDENT_ACTIVITIES || []).filter((a) => mine.has(a.studentId)),
+      SCALE_ENTRIES: (E.SCALE_ENTRIES || []).filter((e) => mine.has(e.studentId)),
+      DONOR_RECEIPTS: (E.DONOR_RECEIPTS || []).filter((r) => r.donorId === session.linkedId),
+      // Everything else a sponsor has no business seeing.
+      PENDING_FEES: [], RECENT_FEES: [], FEE_REMINDERS: [],
+      DAILY_LOGS: [], COMPLAINTS: [], ENQUIRIES: [],
+      TRANSPORT_ATTENDANCE: [], ROUTES: [], ROUTE_TEMPLATES: [],
+      TIMETABLE: [], SYLLABUS: [], CLASSES: [], CLASS_STRENGTH: [],
+      USERS: [], STAFF: [], TEACHER_ATTENDANCE: [],
+      TASKS: [], MEETINGS: [], VOLUNTEERS: [], REMARKS_REWARDS: [],
+      LEAVE_REQUESTS: [], CHAT_THREADS: [], TC_REQUESTS: [],
+      SCALE_SESSIONS: [], SCALE_SUPPORT_PLANS: [], SCALE_DAILY_RITUALS: [],
+      LIBRARY: [], LOANS: [], INVENTORY: [], INVENTORY_CATEGORIES: [],
+      MAINTENANCE_LOGS: [], MOVEMENTS: [],
+      BROADCASTS: [], TEMPLATES: [], RECIPIENT_LISTS: [],
+      DONORS: [], CAMPAIGNS: [], DONOR_FORM_SUBMISSIONS: [], DONOR_SPONSORSHIPS: [],
+      EXPENSES: [], PAY_RUNS: [], PROGRAMS: [], WHATSAPP_MESSAGES: [],
+      SCHOOLS: [], AUDIT: [], CUSTOM_ROLES: [], GOVERNMENT_DOCUMENTS: [],
+      KPIS: {}, TRUST_KPIS: {}, INCOME_SERIES: [], ACTIVITIES: [],
+      ANOMALIES: [], DONATION_PIPELINE: [], COMPLIANCE: [], AI_BRIEF: [],
     };
   }
 

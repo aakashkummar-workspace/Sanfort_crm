@@ -823,6 +823,7 @@ export async function listAuditEvents({
       return {
         events, total, hasMore: off + events.length < total,
         actors: await listAuditActors(),
+        actions: await listAuditActions(),
         counts: await auditCounts(),
       };
     }
@@ -844,8 +845,9 @@ export async function listAuditEvents({
   const total = all.length;
   const events = all.slice(off, off + lim);
   const actors = [...new Set(all.map((r) => r.who).filter(Boolean))].sort();
+  const actions = [...new Set(all.map((r) => r.action).filter(Boolean))].sort();
   return {
-    events, total, hasMore: off + events.length < total, actors,
+    events, total, hasMore: off + events.length < total, actors, actions,
     counts: {
       total,
       failedLogins: all.filter((r) => r.action === "Sign in failed").length,
@@ -874,6 +876,19 @@ async function listAuditActors() {
       .order("created_at", { ascending: false }).limit(2000);
     if (sel.error) return [];
     return [...new Set((sel.data || []).map((r) => r.who).filter(Boolean))].sort();
+  } catch { return []; }
+}
+
+// Distinct action names, so the action filter offers what the log actually
+// holds rather than a guessed list. Same sampling approach as listAuditActors:
+// a school produces a few dozen distinct actions, not thousands.
+async function listAuditActions() {
+  if (!supabaseEnabled) return [];
+  try {
+    const sel = await supabase.from("audit_log").select("action")
+      .order("created_at", { ascending: false }).limit(4000);
+    if (sel.error) return [];
+    return [...new Set((sel.data || []).map((r) => r.action).filter(Boolean))].sort();
   } catch { return []; }
 }
 

@@ -9,6 +9,24 @@ import {
   transportPerMonth, DEFAULT_SCHEDULE_MONTHS, DEFAULT_YEAR_START_MONTH,
 } from "@/backend/lib/fee-schedule.js";
 
+// Turn the server's delivery report into something honest. A reminder run that
+// reaches nobody must not read as success — WhatsApp silently failed 1,562
+// times before this was surfaced.
+function deliveryFlash(label, j) {
+  const d = j.delivery;
+  const n = (j.sent || []).length;
+  if (!d || !d.attempted) return { msg: `${label} · ${n} reminder${n === 1 ? "" : "s"} recorded`, tone: "ok" };
+  if (d.unknown) return { msg: `${label} · ${n} recorded, but WhatsApp did not respond in time — check the WhatsApp log`, tone: "warn" };
+  if (d.delivered === 0 && d.failed > 0) {
+    return { msg: `${label} · ${n} recorded, but all ${d.failed} WhatsApp message${d.failed === 1 ? "" : "s"} FAILED — no parent was contacted`, tone: "bad" };
+  }
+  if (d.failed > 0) {
+    return { msg: `${label} · ${d.delivered} of ${d.attempted} delivered, ${d.failed} failed`, tone: "warn" };
+  }
+  const skip = d.skipped ? `, ${d.skipped} skipped (no phone)` : "";
+  return { msg: `${label} · ${d.delivered} delivered${skip}`, tone: "ok" };
+}
+
 const DEMO_PARENT_PHONE = "+919876543210";
 // Transport is stored as one annual balance per student; the pending statement
 // and class-wise printout also show it per month. The divisor now comes from
@@ -540,7 +558,8 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
     });
     const json = await r.json();
     if (json.ok) {
-      flash(`${json.count} ${channel} reminders queued`);
+      const f = deliveryFlash(`${channel} reminders`, json);
+      flash(f.msg, f.tone);
       setPicked(new Set());
       await refresh?.();
     } else {
@@ -1669,7 +1688,7 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
               });
               const j = await r.json();
               if (!r.ok || !j.ok) throw new Error(j.error || "Failed");
-              flash(`Reminder sent to ${j.sent.length} parent${j.sent.length === 1 ? "" : "s"}`, "ok");
+              { const f = deliveryFlash("Fee reminders", j); flash(f.msg, f.tone); }
               await refresh?.();
             } catch (e) { flash(e.message, "bad"); }
             finally { setRemindBusy(false); setRemindConfirm(false); }
@@ -1695,7 +1714,7 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
               });
               const j = await r.json();
               if (!r.ok || !j.ok) throw new Error(j.error || "Failed");
-              flash(`${bulkRemind.label} · ${j.sent.length} reminder${j.sent.length === 1 ? "" : "s"} sent`, "ok");
+              { const f = deliveryFlash(bulkRemind.label, j); flash(f.msg, f.tone); }
               await refresh?.();
             } catch (e) { flash(e.message, "bad"); }
             finally { setRemindBusy(false); setBulkRemind(null); }

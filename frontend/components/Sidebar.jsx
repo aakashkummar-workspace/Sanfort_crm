@@ -51,7 +51,12 @@ export const NAV_BY_ROLE = {
     { id: "tasks",                 label: "Tasks",                 icon: "check" },
     { id: "users",                 label: "Users & Roles",         icon: "users" },
     { id: "government_documents",  label: "Government documents",  icon: "reports" },
-    { id: "audit",                 label: "Audit log",             icon: "audit" },
+    // Its own section: it is the one screen an admin reaches for when
+    // something needs explaining, and it was easy to miss buried in a
+    // ten-item Governance list.
+    { section: "Activity" },
+    { id: "audit",                 label: "Activity history",      icon: "audit" },
+    { section: "System" },
     { id: "settings",              label: "Settings",              icon: "settings" },
     { id: "account",               label: "My account",            icon: "user" },
   ],
@@ -205,7 +210,8 @@ export const NAV_BY_ROLE = {
     // roster to this role (treated as a manager in /api/data); this entry
     // surfaces the Staff screen in the nav so they can actually reach it.
     { id: "staff",      label: "Staff",         icon: "staff" },
-    { id: "audit",      label: "Audit log",     icon: "audit" },
+    { section: "Activity" },
+    { id: "audit",      label: "Activity history", icon: "audit" },
     { section: "Account" },
     { id: "account",    label: "My account",    icon: "user" },
   ],
@@ -217,8 +223,8 @@ export const NAV_BY_ROLE = {
     { id: "money",      label: "Trust expenses", icon: "money" },
     { id: "donors",     label: "Donors",        icon: "donors" },
     { id: "reports",    label: "Reports",       icon: "reports" },
-    { section: "Records" },
-    { id: "audit",      label: "Audit log",     icon: "audit" },
+    { section: "Activity" },
+    { id: "audit",      label: "Activity history", icon: "audit" },
     { section: "Account" },
     { id: "account",    label: "My account",    icon: "user" },
   ],
@@ -306,7 +312,7 @@ const FEATURE_NAV_CATALOG = [
   { id: "users",                 label: "Users & Roles",       icon: "users" },
   { id: "custom_roles",          label: "Custom roles",        icon: "users" },
   { id: "government_documents",  label: "Government documents",icon: "reports" },
-  { id: "audit",                 label: "Audit log",           icon: "audit" },
+  { id: "audit",                 label: "Activity history",    icon: "audit" },
   { id: "settings",              label: "Settings",            icon: "settings" },
   { section: "Account" },
   { id: "account",               label: "My account",          icon: "user" },

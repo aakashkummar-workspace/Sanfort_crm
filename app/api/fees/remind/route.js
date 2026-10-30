@@ -65,6 +65,12 @@ export async function POST(req) {
       }
     }
   }
+  // Collect the WhatsApp attempts so their real outcome can be reported back.
+  // These used to be fire-and-forget with `.catch(() => {})`, so the screen
+  // said "reminders sent" whether or not a single one reached a parent — which
+  // is how 388 reminders failed in one batch on 29 Oct with nobody noticing.
+  const waAttempts = [];
+
   for (const p of targets) {
     const msg = customMessage || defaultReminderMessage(p);
     const reminder = {
@@ -106,25 +112,59 @@ export async function POST(req) {
         "— Sanfort International School",
         "Thank you.",
       ].join("\n");
-      notifyWhatsApp("fee_reminder", {
-        phone,
-        parentName: "Parent",
-        studentName: p.name,
-        amount: amountLabel,
-        dueDate: p.due || "soon",
-        cls: p.cls,
-        overdue: !!p.overdue,
-        // Plain-text body the Send Text branch in n8n reads.
-        message: messageText,
-      }).catch(() => {});
+      waAttempts.push(
+        notifyWhatsApp("fee_reminder", {
+          phone,
+          parentName: "Parent",
+          studentName: p.name,
+          studentId: p.studentId || p.id,
+          amount: amountLabel,
+          dueDate: p.due || "soon",
+          cls: p.cls,
+          overdue: !!p.overdue,
+          actor: session.name || "Admin",
+          // Plain-text body the provider's text branch reads.
+          message: messageText,
+        }).then(
+          (r) => ({ ok: !!(r && r.ok), skipped: !!(r && r.skipped), name: p.name,
+                    error: r && (r.error || r.skipped) ? String(r.error || r.skipped).slice(0, 120) : null }),
+          (e) => ({ ok: false, skipped: false, name: p.name, error: String(e && e.message || e).slice(0, 120) })
+        )
+      );
+    } else {
+      waAttempts.push(Promise.resolve({ ok: false, skipped: true, name: p.name, error: "no phone on file" }));
     }
   }
   fileWrite(db);
+
+  // Wait for the sends rather than assuming they worked. Capped so a hanging
+  // provider cannot hold the request open indefinitely — anything unresolved
+  // by then is reported as unknown, not as delivered.
+  let delivery = { attempted: waAttempts.length, delivered: 0, failed: 0, skipped: 0, failures: [] };
+  if (waAttempts.length) {
+    const settled = await Promise.race([
+      Promise.all(waAttempts),
+      new Promise((res) => setTimeout(() => res(null), 30000)),
+    ]);
+    if (settled) {
+      for (const r of settled) {
+        if (r.ok) delivery.delivered++;
+        else if (r.skipped) delivery.skipped++;
+        else { delivery.failed++; if (delivery.failures.length < 10) delivery.failures.push({ name: r.name, error: r.error }); }
+      }
+    } else {
+      delivery.unknown = waAttempts.length;
+    }
+  }
+
   try {
     await logAudit(session.name || "Admin", "Sent fee reminders",
-      `${sent.length} parent${sent.length === 1 ? "" : "s"} reminded · total ₹${sent.reduce((a, r) => a + (r.amount || 0), 0).toLocaleString("en-IN")}`);
+      `${sent.length} parent${sent.length === 1 ? "" : "s"} reminded · total ₹${sent.reduce((a, r) => a + (r.amount || 0), 0).toLocaleString("en-IN")}` +
+      ` · WhatsApp ${delivery.delivered}/${delivery.attempted} delivered${delivery.failed ? `, ${delivery.failed} failed` : ""}`,
+      { actorId: session.sub, actorRole: session.role, entityType: "fee_reminder",
+        meta: { reminded: sent.length, ...delivery, failures: undefined } });
   } catch {}
-  return NextResponse.json({ ok: true, sent });
+  return NextResponse.json({ ok: true, sent, delivery });
 }
 
 function defaultReminderMessage(p) {

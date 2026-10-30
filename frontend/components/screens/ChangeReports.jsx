@@ -149,7 +149,10 @@ export default function ChangeReports({ session = {}, showToast }) {
         ) : (
           <div className="card-body" style={{ padding: 0 }}>
             {reports.map((r) => (
-              <div key={r.id} className="lrow" style={{ alignItems: "center", gap: 12, cursor: "pointer" }}
+              // paddingRight keeps the status chip clear of the floating
+              // report button, which sits over the bottom-right of the page.
+              <div key={r.id} className="lrow"
+                style={{ alignItems: "center", gap: 12, cursor: "pointer", paddingRight: 58 }}
                 onClick={() => setOpen(r)}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</div>

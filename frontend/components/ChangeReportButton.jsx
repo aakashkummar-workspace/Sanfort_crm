@@ -16,18 +16,22 @@ export default function ChangeReportButton({ session = {}, screen }) {
     <>
       {/* data-change-report-ui marks this for html2canvas to skip, so the
           button never appears in its own screenshot. */}
+      {/* Hidden while the dialog is up: the button has nothing to do then,
+          and floating it over the overlay reads as a competing control. */}
       <button
         data-change-report-ui="1"
+        hidden={open}
         onClick={() => setOpen(true)}
         title="Report a problem or request a change"
         aria-label="Report a problem or request a change"
         style={{
+          display: open ? "none" : "grid",
           position: "fixed",
           // Clear of any mobile bottom navigation.
           bottom: "calc(18px + env(safe-area-inset-bottom, 0px) + var(--bottom-nav-h, 0px))",
           right: 18, zIndex: 200,
           width: 46, height: 46, borderRadius: "50%",
-          display: "grid", placeItems: "center", cursor: "pointer",
+          placeItems: "center", cursor: "pointer",
           background: "var(--accent)", color: "#fff", border: "none",
           boxShadow: "0 3px 14px rgba(0,0,0,0.22)",
         }}

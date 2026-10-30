@@ -6142,6 +6142,175 @@ export async function activeSponsoredStudentIds(donorId) {
   }
 }
 
+// ---------- change reports ----------
+// Bugs and change requests filed from inside the app. Like progress videos,
+// deliberately absent from runBatched/readAllData: the list grows without
+// bound and the rows reference screenshots of other people's data. Paginated
+// route only, and the route is what applies the reporter scoping.
+
+const fromChangeReport = (r) => r ? ({
+  id: r.id,
+  type: r.report_type ?? r.type,
+  severity: r.severity ?? "major",
+  title: r.title,
+  description: r.description,
+  expectedBehaviour: r.expected_behaviour ?? r.expectedBehaviour ?? null,
+  pageUrl: r.page_url ?? r.pageUrl ?? null,
+  pageRoute: r.page_route ?? r.pageRoute ?? null,
+  browserInfo: r.browser_info ?? r.browserInfo ?? null,
+  screenSize: r.screen_size ?? r.screenSize ?? null,
+  screenshotFile: r.screenshot_file ?? r.screenshotFile ?? null,
+  status: r.status ?? "new",
+  assignedToId: r.assigned_to_id ?? r.assignedToId ?? null,
+  assignedToName: r.assigned_to_name ?? r.assignedToName ?? null,
+  resolutionNotes: r.resolution_notes ?? r.resolutionNotes ?? null,
+  resolvedAt: r.resolved_at ?? r.resolvedAt ?? null,
+  reporterId: r.reporter_id ?? r.reporterId ?? null,
+  reporterName: r.reporter_name ?? r.reporterName ?? null,
+  reporterRole: r.reporter_role ?? r.reporterRole ?? null,
+  createdAt: r.created_at ?? r.createdAt ?? null,
+  updatedAt: r.updated_at ?? r.updatedAt ?? null,
+}) : null;
+
+export async function addChangeReport(v = {}) {
+  if (!v.title) throw new Error("title required");
+  if (!v.description) throw new Error("description required");
+  const id = `CR-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+  const row = {
+    id,
+    report_type: v.type || "bug",
+    severity: v.severity || "major",
+    title: String(v.title).slice(0, 200),
+    description: String(v.description).slice(0, 5000),
+    expected_behaviour: v.expectedBehaviour ? String(v.expectedBehaviour).slice(0, 5000) : null,
+    page_url: v.pageUrl ? String(v.pageUrl).slice(0, 1000) : null,
+    page_route: v.pageRoute ? String(v.pageRoute).slice(0, 200) : null,
+    browser_info: v.browserInfo ? String(v.browserInfo).slice(0, 500) : null,
+    screen_size: v.screenSize ? String(v.screenSize).slice(0, 50) : null,
+    screenshot_file: v.screenshotFile || null,
+    status: "new",
+    reporter_id: v.reporterId || null,
+    reporter_name: v.reporterName || null,
+    reporter_role: v.reporterRole || null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (supabaseEnabled) {
+    const ins = await supabase.from("change_reports").insert(row).select().single();
+    if (!ins.error) return fromChangeReport(ins.data);
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.changeReports)) db.changeReports = [];
+  const local = fromChangeReport(row);
+  db.changeReports.unshift(local);
+  fileWrite(db);
+  return local;
+}
+
+export async function getChangeReport(id) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("change_reports").select("*").eq("id", id).maybeSingle();
+    if (!sel.error) return sel.data ? fromChangeReport(sel.data) : null;
+    if (!isSchemaMissError(sel.error)) throw new Error(sel.error.message);
+  }
+  const db = fileRead();
+  return (db.changeReports || []).find((r) => r.id === id) || null;
+}
+
+// `reporterId` is the privacy boundary, applied HERE in the query rather than
+// left to the caller: a non-triager must never receive a row they did not
+// file, whatever filters they send.
+export async function listChangeReports({
+  reporterId, status, type, severity, limit = 50, offset = 0,
+} = {}) {
+  if (supabaseEnabled) {
+    let q = supabase.from("change_reports").select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (reporterId) q = q.eq("reporter_id", reporterId);
+    if (status) q = q.eq("status", status);
+    if (type) q = q.eq("report_type", type);
+    if (severity) q = q.eq("severity", severity);
+    const sel = await q;
+    if (!sel.error) {
+      const total = sel.count ?? (sel.data || []).length;
+      return {
+        reports: (sel.data || []).map(fromChangeReport),
+        total,
+        hasMore: offset + (sel.data || []).length < total,
+      };
+    }
+    if (!isSchemaMissError(sel.error)) {
+      console.warn(`[db] change_reports fell back: ${sel.error.message}`);
+    }
+  }
+  const db = fileRead();
+  let all = Array.isArray(db.changeReports) ? db.changeReports : [];
+  if (reporterId) all = all.filter((r) => r.reporterId === reporterId);
+  if (status) all = all.filter((r) => r.status === status);
+  if (type) all = all.filter((r) => r.type === type);
+  if (severity) all = all.filter((r) => r.severity === severity);
+  const total = all.length;
+  return { reports: all.slice(offset, offset + limit), total, hasMore: offset + limit < total };
+}
+
+export async function updateChangeReport(id, patch = {}) {
+  if (!id) throw new Error("id required");
+  const row = { updated_at: new Date().toISOString() };
+  if (patch.status) {
+    row.status = patch.status;
+    // Stamp the moment it stopped being open, so "how long did this take"
+    // is answerable later without reading the audit trail.
+    row.resolved_at = ["fixed", "wont_fix", "duplicate"].includes(patch.status)
+      ? new Date().toISOString() : null;
+  }
+  if ("assignedToId" in patch) row.assigned_to_id = patch.assignedToId || null;
+  if ("assignedToName" in patch) row.assigned_to_name = patch.assignedToName || null;
+  if ("resolutionNotes" in patch) {
+    row.resolution_notes = patch.resolutionNotes ? String(patch.resolutionNotes).slice(0, 5000) : null;
+  }
+  if (supabaseEnabled) {
+    const upd = await supabase.from("change_reports").update(row).eq("id", id).select().maybeSingle();
+    if (!upd.error) return upd.data ? fromChangeReport(upd.data) : null;
+    if (!isSchemaMissError(upd.error)) throw new Error(upd.error.message);
+  }
+  const db = fileRead();
+  const local = (db.changeReports || []).find((r) => r.id === id);
+  if (!local) return null;
+  if (row.status) { local.status = row.status; local.resolvedAt = row.resolved_at; }
+  if ("assigned_to_id" in row) local.assignedToId = row.assigned_to_id;
+  if ("assigned_to_name" in row) local.assignedToName = row.assigned_to_name;
+  if ("resolution_notes" in row) local.resolutionNotes = row.resolution_notes;
+  local.updatedAt = row.updated_at;
+  fileWrite(db);
+  return local;
+}
+
+export async function removeChangeReport(id) {
+  if (!id) throw new Error("id required");
+  const existing = await getChangeReport(id);
+  if (!existing) return null;
+  if (supabaseEnabled) {
+    const del = await supabase.from("change_reports").delete().eq("id", id);
+    if (del.error && !isSchemaMissError(del.error)) throw new Error(del.error.message);
+    if (!del.error) return existing;
+  }
+  const db = fileRead();
+  db.changeReports = (db.changeReports || []).filter((r) => r.id !== id);
+  fileWrite(db);
+  return existing;
+}
+
+// Count of reports still needing action, for the sidebar badge.
+export async function openChangeReportCount(reporterId) {
+  try {
+    const { reports } = await listChangeReports({ reporterId, limit: 200 });
+    return reports.filter((r) => ["new", "acknowledged", "in_progress"].includes(r.status)).length;
+  } catch { return 0; }
+}
+
 // ---------- student progress videos ----------
 // Metadata only. The bytes live on disk under MEDIA_ROOT; see lib/media.js
 // for why, and for the path-escape guard every read goes through.

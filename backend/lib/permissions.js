@@ -61,6 +61,7 @@ export const ALL_FEATURES = [
   { id: "programs",             label: "School programs",           group: "Operations" },
   { id: "progress_videos",      label: "Progress videos (upload)",  group: "Workflow" },
   { id: "my_progress_videos",   label: "Progress videos (watch)",   group: "Account" },
+  { id: "change_reports",       label: "Change reports",            group: "Governance" },
   { id: "donor_dashboard",      label: "Donor dashboard",           group: "Account" },
   { id: "messages",             label: "Parent ↔ Admin messages",   group: "Workflow" },
   { id: "government_documents", label: "Government documents",      group: "Governance" },

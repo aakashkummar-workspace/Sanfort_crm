@@ -55,6 +55,8 @@ import ScreenGovernmentDocuments from "./screens/GovernmentDocuments";
 import ScreenStudentActivities from "./screens/StudentActivities";
 import ScreenPrograms from "./screens/Programs";
 import ScreenProgressVideos from "./screens/ProgressVideos";
+import ScreenChangeReports from "./screens/ChangeReports";
+import ChangeReportButton from "./ChangeReportButton";
 import ScreenMyProgressVideos from "./screens/MyProgressVideos";
 import ScreenCustomRoles from "./screens/CustomRoles";
 import ScreenMessages from "./screens/Messages";
@@ -108,6 +110,7 @@ const SCREENS = {
   student_activities: ScreenStudentActivities,
   programs: ScreenPrograms,
   progress_videos: ScreenProgressVideos,
+  change_reports: ScreenChangeReports,
   my_progress_videos: ScreenMyProgressVideos,
   custom_roles: ScreenCustomRoles,
   messages: ScreenMessages,
@@ -847,6 +850,11 @@ export default function AppShell({ initialData, session }) {
         onDismiss={() => setReminderToast(null)}
         onOpen={(screen) => { setReminderToast(null); if (screen) setCurrent(screen); }}
       />
+
+      {/* Report-a-problem button. Hides itself for roles that cannot file,
+          and passes the current screen so the report says where it came
+          from without the reporter having to describe it. */}
+      <ChangeReportButton session={session} screen={current} />
     </div>
   );
 }

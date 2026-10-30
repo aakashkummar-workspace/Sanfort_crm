@@ -91,6 +91,54 @@ export function deleteMediaFile(storageKey) {
   try { fs.unlinkSync(resolveMediaPath(storageKey)); return true; } catch { return false; }
 }
 
+// ---------- change-report screenshots ----------
+// Same storage root, same escape guard. These live under MEDIA_ROOT rather
+// than public/ for the reason in the migration: a screenshot of a fees or
+// student page is personal data about a child, and anything under a
+// statically served directory is readable by whoever guesses the filename.
+
+export const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+
+// Strict: only the two formats html2canvas produces, and only base64.
+const DATA_URL_RE = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/;
+
+// Decode a submitted data URL, or throw. Rejects on format and on size
+// BEFORE anything touches the disk.
+export function decodeScreenshot(dataUrl) {
+  const m = DATA_URL_RE.exec(String(dataUrl || "").trim());
+  if (!m) throw new Error("Screenshot must be a PNG or JPEG data URL");
+  const buf = Buffer.from(m[2], "base64");
+  if (!buf.length) throw new Error("Screenshot is empty");
+  if (buf.length > MAX_SCREENSHOT_BYTES) {
+    throw new Error(`Screenshot is ${(buf.length / 1048576).toFixed(1)} MB; the limit is 4 MB`);
+  }
+  return { buf, ext: m[1] === "png" ? ".png" : ".jpg" };
+}
+
+// Random filename — never anything the reporter supplied, and not derived
+// from the report id either, so a filename cannot be guessed from a known id.
+export function writeScreenshot(dataUrl) {
+  const { buf, ext } = decodeScreenshot(dataUrl);
+  const name = `${require("crypto").randomBytes(24).toString("hex")}${ext}`;
+  const key = path.posix.join("change-reports", name);
+  const full = ensureMediaDir(key);
+  fs.writeFileSync(full, buf);
+  return { file: name, bytes: buf.length };
+}
+
+// Resolve a stored screenshot filename to a path. basename() strips any
+// directory part, so a tampered database value cannot walk out of the
+// folder; resolveMediaPath then re-checks against the root.
+export function screenshotPath(file) {
+  const safe = path.basename(String(file || ""));
+  if (!safe || safe === "." || safe === "..") throw new Error("bad screenshot name");
+  return resolveMediaPath(path.posix.join("change-reports", safe));
+}
+
+export function deleteScreenshot(file) {
+  try { fs.unlinkSync(screenshotPath(file)); return true; } catch { return false; }
+}
+
 // Free space on the media volume, so the upload screen can warn before the
 // disk fills rather than after. Returns null where the platform doesn't
 // support it, and callers must treat null as "unknown", not "fine".

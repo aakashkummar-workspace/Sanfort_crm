@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "../Icon";
 import { KPI, AvatarChip } from "../ui";
+import SponsorshipPanel from "../SponsorshipPanel";
 import { money, moneyK } from "@/lib/format";
 import { resolveSchool, downloadPdf } from "@/lib/export";
 
@@ -546,6 +547,8 @@ export default function ScreenDonors({ E, refresh, role, session }) {
               </tbody>
             </table>
           </div>
+
+          <SponsorshipPanel E={E} role={role} session={session} donors={donors} />
         </div>
 
         <div className="col-4" style={{ display: "flex", flexDirection: "column", gap: 14 }}>

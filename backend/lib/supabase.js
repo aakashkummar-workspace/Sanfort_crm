@@ -461,11 +461,12 @@ export const toTcRequest = (r) => ({
 export const fromTeacherAttendance = (r) => r && {
   id: r.id, teacherId: r.teacher_id, teacherName: r.teacher_name,
   date: r.date, status: r.status ?? "present",
-  // The same DB column (leave_reason) backs both the leave note and the
-  // late note — surface the right alias depending on the row's status so
-  // client code reads cleanly.
+  // late_reason is its own column now, but rows written before that migration
+  // stored the late note in leave_reason — so prefer the real column and fall
+  // back to the old status-based split. Not backfilled by design.
   leaveReason: r.status === "leave" ? r.leave_reason : null,
-  lateReason:  r.status === "late"  ? r.leave_reason : null,
+  lateReason:  r.late_reason ?? (r.status === "late" ? r.leave_reason : null),
+  markedFrom: r.marked_from ?? null,
   markedBy: r.marked_by, markedAt: r.marked_at,
 };
 

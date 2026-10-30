@@ -131,7 +131,7 @@ export default function ScreenExams({ E, refresh, role, session }) {
       const r = await fetch("/api/teacher-attendance", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ date: today, status }),
+        body: JSON.stringify({ date: today, status, source: "exams-strip" }),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "Failed");

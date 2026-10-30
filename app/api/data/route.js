@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readAllData, listScaleEntries, listScaleSessions, BACKEND } from "@/lib/db";
+import { readAllData, listScaleEntries, listScaleSessions, activeSponsoredStudentIds, BACKEND } from "@/lib/db";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +9,9 @@ export const dynamic = "force-dynamic";
 // DevTools could read donors, expenses, staff, full audit log etc.
 // even though the UI hid them. The AppShell still re-scopes for
 // belt-and-braces, but this is the security boundary.
-function scopeForRole(data, session) {
+// `sponsoredIds` is only used by the donor branch. It is passed in rather than
+// looked up here because that lookup is async and this function is not.
+function scopeForRole(data, session, sponsoredIds) {
   if (!session) return null;
   const role = session.role;
   // Admin / principal / academic_director / school_accountant see everything.
@@ -49,6 +51,7 @@ function scopeForRole(data, session) {
       routes: [], routeTemplates: [], transportAttendance: [],
       complaints: [], enquiries: [],
       broadcasts: [], templates: [], recipientLists: [], movements: [],
+      whatsappMessages: [],
       meetings: [], volunteers: [],
       chatThreads: [],
       tcRequests: [],
@@ -56,6 +59,11 @@ function scopeForRole(data, session) {
       governmentDocuments: [],
       customRoles: [], users: [],
       studentActivities: [],
+      payRuns: [],
+      // This branch builds its own object rather than spreading `sanitised`,
+      // so the blanks there do not apply and each one has to be repeated.
+      donorSponsorships: [],
+      programs: [],
       leaveRequests: [],
       remarksRewards: [],
       scaleSessions: [], scaleEntries: [],
@@ -73,6 +81,10 @@ function scopeForRole(data, session) {
 
   // Strip lists that are sensitive across the board for non-managers.
   // Each role gets its own positive overrides below.
+  // NOTE: `programs` is deliberately NOT stripped here. A school event —
+  // sports day, a workshop, an excursion — is public information inside the
+  // school; teachers run them and parents need to see what their child is
+  // signed up for. The permissive default is correct. Don't "fix" this.
   const sanitised = {
     ...data,
     donors: [],
@@ -83,10 +95,26 @@ function scopeForRole(data, session) {
     staff: [],
     teacherAttendance: [],
     audit: [],
+    // Defence in depth. readAllData never loads the WhatsApp log (it carries
+    // message bodies — fee amounts, balances, phone numbers — and grows with
+    // every payment), so this is normally already absent. Listed here so that
+    // if anything ever puts it in the payload it still can't reach a
+    // non-manager role.
+    whatsappMessages: [],
     schools: [],
     governmentDocuments: [],
     customRoles: [],
     campaigns: [],
+    // Payroll headers carry the school's total salary bill; the payslips
+    // behind them carry every individual's pay. Admin-only, and listed in
+    // each role branch below as well as here — the branches return before
+    // this object is spread, so one place is not enough.
+    payRuns: [],
+    // Who sponsors whom. Not in the bootstrap payload today (allocations are
+    // served from /api/donor-sponsorships), but blanked here so that adding it
+    // later cannot quietly expose an allocation to a parent or a teacher —
+    // the whole point of keeping sponsorship off the student record.
+    donorSponsorships: [],
   };
 
   if (role === "transport_manager") {
@@ -103,7 +131,7 @@ function scopeForRole(data, session) {
       meetings: [], volunteers: [], tasks: [],
       scaleSessions: [], scaleEntries: [], scaleSupportPlans: [], scaleDailyRituals: [],
       studentActivities: [], leaveRequests: [], remarksRewards: [],
-      tcRequests: [], governmentDocuments: [],
+      tcRequests: [], governmentDocuments: [], programs: [], payRuns: [],
     };
   }
 
@@ -121,7 +149,7 @@ function scopeForRole(data, session) {
       routes: [], routeTemplates: [], transportAttendance: [], maintenanceLogs: [],
       meetings: [], volunteers: [], tasks: [],
       studentActivities: [], leaveRequests: [], remarksRewards: [],
-      tcRequests: [], governmentDocuments: [],
+      tcRequests: [], governmentDocuments: [], programs: [], payRuns: [],
     };
   }
 
@@ -209,6 +237,60 @@ function scopeForRole(data, session) {
     };
   }
 
+  // Donors see ONLY the students they sponsor, and only an allowlisted
+  // projection of each. MUST stay above the `return sanitised` below: placed
+  // after it this branch is dead code and a donor receives the sanitised set,
+  // which carries addedStudents for the entire school.
+  //
+  // sponsoredIds is resolved in GET() because scopeForRole is synchronous.
+  // An empty list is the correct fail-closed answer for a donor whose
+  // linkedId no longer resolves — never fall back to "the first student".
+  if (role === "donor") {
+    const ids = new Set(Array.isArray(sponsoredIds) ? sponsoredIds : []);
+    const mine = (data.addedStudents || []).filter((s) => ids.has(s.id));
+    const mineIds = new Set(mine.map((s) => s.id));
+    return {
+      ...sanitised,
+      // Built field by field, never by spreading the student row and deleting
+      // keys: fromStudent() will gain a field one day and a blocklist would
+      // leak it. Deliberately absent — fees and dues (which would hand a donor
+      // leverage over a household), parent names and phone numbers (which
+      // would let them contact a minor's family directly), transport route and
+      // stop (a child's physical location at known times), complaints,
+      // remarks and support plans (welfare records; a sponsor is not a
+      // guardian), and daily logs (written for parents).
+      addedStudents: mine.map((s) => ({
+        id: s.id,
+        name: s.name,
+        cls: s.cls,
+        attendance: s.attendance ?? 0,
+        joined: s.joined ?? null,
+      })),
+      archivedStudents: [],
+      // Academic outcome — what the sponsorship actually funded.
+      exams: data.exams || [],
+      marks: (data.marks || []).filter((m) => mineIds.has(m.studentId)),
+      scaleEntries: (data.scaleEntries || []).filter((e) => mineIds.has(e.studentId)),
+      studentActivities: (data.studentActivities || []).filter((a) => mineIds.has(a.studentId)),
+      // The donor's own giving history — their data, and the dashboard looks
+      // broken without it.
+      donorReceipts: (data.donorReceipts || []).filter((r) => r.donorId === session.linkedId),
+      // Everything student-adjacent, explicitly emptied. scopeForRole defaults
+      // to permissive, so anything not named here would pass through.
+      pendingFees: [], recentFees: [], feeReminders: [],
+      dailyLogs: [], complaints: [], enquiries: [],
+      transportAttendance: [], routes: [], routeTemplates: [],
+      timetable: [], syllabus: [], classes: [], users: [], staff: [],
+      tasks: [], meetings: [], volunteers: [], remarksRewards: [],
+      leaveRequests: [], chatThreads: [], tcRequests: [],
+      scaleSessions: [], scaleSupportPlans: [], scaleDailyRituals: [],
+      library: [], libraryLoans: [], inventory: [],
+      donors: [], campaigns: [], donorFormSubmissions: [], donorSponsorships: [],
+      kpis: {}, trustKpis: {}, classStrength: [], incomeSeries: [],
+      activities: [], anomalies: [], donationPipeline: [], compliance: [], aiBrief: [],
+    };
+  }
+
   // Unknown / custom role → safest default is the sanitised set
   // (no donors / staff / expenses / audit) plus their normal class data.
   return sanitised;
@@ -220,7 +302,13 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Sign in required" }, { status: 401 });
   }
   const data = await readAllData();
-  const scoped = scopeForRole(data, session);
+  // Resolve the donor's sponsored students before scoping. On any failure this
+  // stays empty, so the donor sees nothing rather than somebody else's data.
+  let sponsoredIds = [];
+  if (session.role === "donor" && session.linkedId) {
+    try { sponsoredIds = await activeSponsoredStudentIds(session.linkedId); } catch {}
+  }
+  const scoped = scopeForRole(data, session, sponsoredIds);
   // readAllData only carries the newest 2000 SCALE entries school-wide, so a
   // parent's child silently lost older marks. Load the child's full history
   // (plus their class sessions, for dates/subjects on the timeline).
@@ -235,6 +323,17 @@ export async function GET() {
       scoped.scaleSessions = sessions.map((s) => ({
         id: s.id, cls: s.cls, subject: s.subject, sessionDate: s.sessionDate, sessionType: s.sessionType,
       }));
+    } catch {}
+  }
+  // Donors hit the same 2000-row school-wide SCALE cap, which would silently
+  // drop older entries for a sponsored student. No sessions — those carry
+  // teacher names and lesson detail a donor has no business seeing.
+  if (session.role === "donor" && scoped?.addedStudents?.length) {
+    try {
+      const lists = await Promise.all(
+        scoped.addedStudents.slice(0, 20).map((s) => listScaleEntries({ studentId: s.id, limit: 2000 }))
+      );
+      scoped.scaleEntries = lists.flat();
     } catch {}
   }
   return NextResponse.json(scoped, { headers: { "x-data-backend": BACKEND } });

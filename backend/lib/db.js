@@ -8,6 +8,10 @@
 import fs from "fs";
 import path from "path";
 import { formatClassLabel } from "./format.js";
+import {
+  buildMonthlySchedule,
+  DEFAULT_SCHEDULE_MONTHS, DEFAULT_YEAR_START_MONTH,
+} from "./fee-schedule.js";
 import { indicatorMax } from "./scale.js";
 import {
   supabase, supabaseEnabled,
@@ -74,6 +78,7 @@ const EMPTY_DB = {
   recipientLists: [],
   donors: [],
   campaigns: [],
+  whatsappMessages: [],
 };
 
 function fileEnsure() {
@@ -131,13 +136,18 @@ const STATIC_EMPTIES = {
   },
   classStrength: [], staff: [], inventory: [], donors: [], incomeSeries: [],
   schools: [], anomalies: [], donationPipeline: [],
-  compliance: [], aiBrief: [], roles: [
+  compliance: [], aiBrief: [], programs: [], teacherAttendanceLog: [], payRuns: [], roles: [
     { k: "super", label: "Super Admin", icon: "shield" },
     { k: "principal", label: "Principal", icon: "school" },
     { k: "teacher", label: "Teacher", icon: "book" },
     { k: "parent", label: "Parent", icon: "heart" },
   ],
   users: [],
+  // The WhatsApp log is NOT loaded by readAllData — it grows with every fee
+  // payment. This entry only guarantees E.whatsappMessages is an array for any
+  // screen that reads it defensively; the real data comes from
+  // /api/whatsapp/messages.
+  whatsappMessages: [],
 };
 
 // ----------------------------------------------------------------------------
@@ -290,6 +300,7 @@ export async function readAllData() {
       expenseCategoriesR, expenseTemplatesR, donorFormSubmissionsR, leaveRequestsR,
       remarksRewardsR, governmentDocumentsR, studentActivitiesR, customRolesR,
       scaleSessionsR, scaleEntriesR, scaleSupportPlansR, scaleDailyRitualsR, syllabusR,
+      programsR, payRunsR,
     ] = await runBatched([
       () => listExpenseCategories().catch(() => safeArr("expenseCategories")),
       () => listExpenseTemplates().catch(() => safeArr("expenseTemplates")),
@@ -304,6 +315,11 @@ export async function readAllData() {
       () => listSupportPlans({ limit: 200 }).catch(() => safeArr("scaleSupportPlans")),
       () => listDailyRituals({ limit: 200 }).catch(() => safeArr("scaleDailyRituals")),
       () => listSyllabus().catch(() => safeArr("syllabus")),
+      () => listPrograms({ limit: 200 }).catch(() => safeArr("programs")),
+      // HEADERS ONLY — three years of months. Payslips are the bulky half
+      // (one row per staff per month) and only the run-detail screen needs
+      // them, so they are fetched on demand via getPayRun.
+      () => listPayRuns({ limit: 36 }).catch(() => safeArr("payRuns")),
     ]);
     return {
       ...STATIC_EMPTIES,
@@ -458,6 +474,10 @@ export async function readAllData() {
       // Failures are tolerated so a fresh install (where the v2 migration
       // hasn't been applied yet) still loads.
       expenseCategories: expenseCategoriesR,
+      // The canonical built-in category list, so the Money screen stops
+      // keeping its own copy of it. The two drifted — "Inventory purchase"
+      // was stamped by the inventory cascade but missing from the dropdown.
+      expenseCategoryCatalog: EXPENSE_CATEGORIES,
       expenseTemplates:  expenseTemplatesR,
       donorFormSubmissions: donorFormSubmissionsR,
       leaveRequests: leaveRequestsR,
@@ -469,6 +489,8 @@ export async function readAllData() {
       scaleEntries:  scaleEntriesR,
       scaleSupportPlans: scaleSupportPlansR,
       scaleDailyRituals: scaleDailyRitualsR,
+      programs: programsR,
+      payRuns: payRunsR,
       library: (() => {
         const sb = (lib || []).map(fromBook);
         const seen = new Set(sb.map((b) => b.id));
@@ -873,6 +895,329 @@ async function auditCounts() {
   ]);
   return { total, failedLogins, financial, permissions };
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp message log
+// ---------------------------------------------------------------------------
+// Every send attempt, body included. Written from inside notifyWhatsApp (one
+// writer, five exit points) rather than from the six call sites.
+//
+// Deliberately NOT part of readAllData: this table grows with every fee
+// payment and reminder, and loading it into /api/data for every role on every
+// page load is the mistake that left the audit log with a 100-row read cap.
+// The only read path is listWhatsAppMessages via /api/whatsapp/messages.
+
+// Row → camelCase, mirroring fromAuditRow. Tolerates file-store rows, which
+// are already camelCase, so one mapper serves both backends.
+export const fromWhatsAppMessage = (r) => r ? ({
+  id: r.id,
+  provider: r.provider ?? null,
+  providerMessageId: r.provider_message_id ?? r.providerMessageId ?? null,
+  event: r.event ?? null,
+  direction: r.direction ?? "out",
+  toPhone: r.to_phone ?? r.toPhone ?? null,
+  recipientName: r.recipient_name ?? r.recipientName ?? null,
+  studentId: r.student_id ?? r.studentId ?? null,
+  studentName: r.student_name ?? r.studentName ?? null,
+  body: r.body ?? null,
+  mediaUrl: r.media_url ?? r.mediaUrl ?? null,
+  hasMedia: !!(r.has_media ?? r.hasMedia),
+  status: r.status ?? "queued",
+  error: r.error ?? null,
+  providerResponse: r.provider_response ?? r.providerResponse ?? null,
+  actor: r.actor ?? null,
+  actorId: r.actor_id ?? r.actorId ?? null,
+  broadcastId: r.broadcast_id ?? r.broadcastId ?? null,
+  retryOf: r.retry_of ?? r.retryOf ?? null,
+  attempt: Number(r.attempt ?? 1) || 1,
+  createdAt: r.created_at ?? r.createdAt ?? null,
+  sentAt: r.sent_at ?? r.sentAt ?? null,
+  deliveredAt: r.delivered_at ?? r.deliveredAt ?? null,
+}) : null;
+
+// camelCase → the snake_case row shape. Both the single insert and the
+// broadcast batch go through this, so the two paths can't drift apart.
+function toWhatsAppRow(m) {
+  return {
+    id: m.id,
+    provider: m.provider ?? null,
+    provider_message_id: m.providerMessageId ?? null,
+    event: m.event || "unknown",
+    direction: m.direction || "out",
+    to_phone: m.toPhone ?? null,
+    recipient_name: m.recipientName ?? null,
+    student_id: m.studentId ?? null,
+    student_name: m.studentName ?? null,
+    body: m.body ?? null,
+    media_url: m.mediaUrl ?? null,
+    has_media: !!m.hasMedia,
+    status: m.status || "queued",
+    error: m.error ?? null,
+    provider_response: m.providerResponse ?? null,
+    actor: m.actor ?? null,
+    actor_id: m.actorId ?? null,
+    broadcast_id: m.broadcastId ?? null,
+    retry_of: m.retryOf ?? null,
+    attempt: Number(m.attempt) || 1,
+    sent_at: m.sentAt ?? null,
+    delivered_at: m.deliveredAt ?? null,
+  };
+}
+
+// Time-prefixed id, same reasoning as logAudit's: random-only ids collide on a
+// text primary key once the table is big, and this one grows faster than audit.
+export function newWhatsAppMessageId() {
+  return `WAM-${Date.now().toString(36).toUpperCase()}-${String(Math.floor(Math.random() * 1e4)).padStart(4, "0")}`;
+}
+
+// File-store cap. fileWrite rewrites the entire db.json on every write, so an
+// uncapped log would make each send O(file size). 2000 rows is weeks of
+// history on the dev backend, which is all it is for.
+const WA_FILE_CAP = 2000;
+
+// One row. Never throws — the caller is on the fee-payment happy path.
+export async function addWhatsAppMessage(message = {}) {
+  const row = { ...message, id: message.id || newWhatsAppMessageId() };
+  if (supabaseEnabled) {
+    try {
+      const ins = await supabase.from("whatsapp_messages").insert(toWhatsAppRow(row));
+      if (!ins.error) return fromWhatsAppMessage({ ...toWhatsAppRow(row), created_at: new Date().toISOString() });
+      if (!isSchemaMissError(ins.error)) {
+        console.warn(`[db] whatsapp_messages insert failed: ${ins.error.message}`);
+        return null;
+      }
+      // Migration not applied yet — fall through to the file store so the log
+      // isn't lost between deploying the code and running the SQL.
+    } catch (e) {
+      console.warn(`[db] whatsapp_messages insert threw: ${e.message}`);
+      return null;
+    }
+  }
+  try {
+    const db = fileRead();
+    if (!Array.isArray(db.whatsappMessages)) db.whatsappMessages = [];
+    const fileRow = { ...row, createdAt: row.createdAt || new Date().toISOString() };
+    db.whatsappMessages.unshift(fileRow);
+    db.whatsappMessages = db.whatsappMessages.slice(0, WA_FILE_CAP);
+    fileWrite(db);
+    return fromWhatsAppMessage(fileRow);
+  } catch (e) {
+    console.warn(`[db] whatsapp_messages file write failed: ${e.message}`);
+    return null;
+  }
+}
+
+// Many rows in one write. The broadcast route fans out to up to 500
+// recipients; 500 round-trips would blow the route's time budget on inserts
+// alone, so that path collects rows and calls this once.
+export async function addWhatsAppMessages(messages = []) {
+  const rows = (Array.isArray(messages) ? messages : [])
+    .map((m) => ({ ...m, id: m.id || newWhatsAppMessageId() }));
+  if (rows.length === 0) return [];
+  if (supabaseEnabled) {
+    try {
+      const ins = await supabase.from("whatsapp_messages").insert(rows.map(toWhatsAppRow));
+      if (!ins.error) return rows.map((r) => fromWhatsAppMessage(toWhatsAppRow(r)));
+      if (!isSchemaMissError(ins.error)) {
+        console.warn(`[db] whatsapp_messages bulk insert failed: ${ins.error.message}`);
+        return [];
+      }
+    } catch (e) {
+      console.warn(`[db] whatsapp_messages bulk insert threw: ${e.message}`);
+      return [];
+    }
+  }
+  try {
+    const db = fileRead();
+    if (!Array.isArray(db.whatsappMessages)) db.whatsappMessages = [];
+    const stamped = rows.map((r) => ({ ...r, createdAt: r.createdAt || new Date().toISOString() }));
+    db.whatsappMessages.unshift(...stamped);
+    db.whatsappMessages = db.whatsappMessages.slice(0, WA_FILE_CAP);
+    fileWrite(db);
+    return stamped.map(fromWhatsAppMessage);
+  } catch (e) {
+    console.warn(`[db] whatsapp_messages bulk file write failed: ${e.message}`);
+    return [];
+  }
+}
+
+// Patch an existing row — the hook a delivery-receipt webhook will use to set
+// delivered_at, and what a retry uses to point the old row at its replacement.
+export async function updateWhatsAppMessage(id, patch = {}) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    try {
+      const body = toWhatsAppRow({ ...patch, id });
+      // Only send the keys the caller actually passed; a full row would null
+      // out every column they left out.
+      const allowed = {};
+      for (const k of Object.keys(patch)) {
+        const snake = k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+        if (snake in body) allowed[snake] = body[snake];
+      }
+      if (Object.keys(allowed).length === 0) return null;
+      const up = await supabase.from("whatsapp_messages").update(allowed).eq("id", id).select("*").maybeSingle();
+      if (!up.error) return fromWhatsAppMessage(up.data);
+      if (!isSchemaMissError(up.error)) {
+        console.warn(`[db] whatsapp_messages update failed: ${up.error.message}`);
+        return null;
+      }
+    } catch (e) {
+      console.warn(`[db] whatsapp_messages update threw: ${e.message}`);
+      return null;
+    }
+  }
+  try {
+    const db = fileRead();
+    const list = Array.isArray(db.whatsappMessages) ? db.whatsappMessages : [];
+    const i = list.findIndex((r) => r.id === id);
+    if (i < 0) return null;
+    list[i] = { ...list[i], ...patch };
+    db.whatsappMessages = list;
+    fileWrite(db);
+    return fromWhatsAppMessage(list[i]);
+  } catch (e) {
+    console.warn(`[db] whatsapp_messages file update failed: ${e.message}`);
+    return null;
+  }
+}
+
+// One row by id — what the retry route needs to rebuild a send from the log.
+export async function getWhatsAppMessage(id) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    try {
+      const sel = await supabase.from("whatsapp_messages").select("*").eq("id", id).maybeSingle();
+      if (!sel.error) return fromWhatsAppMessage(sel.data);
+      if (!isSchemaMissError(sel.error)) console.warn(`[db] whatsapp_messages get fell back: ${sel.error.message}`);
+    } catch {}
+  }
+  const db = fileRead();
+  const list = Array.isArray(db.whatsappMessages) ? db.whatsappMessages : [];
+  return fromWhatsAppMessage(list.find((r) => r.id === id) || null);
+}
+
+// Paginated, filterable read — the backing query for the WhatsApp screen.
+// Same supabase → isSchemaMissError → fileRead ladder as listAuditEvents.
+//
+// Returns { messages, total, hasMore, counts }.
+export async function listWhatsAppMessages({
+  limit = 50, offset = 0, studentId, phone, status, event, from, to, q,
+} = {}) {
+  const lim = Math.min(Math.max(1, Number(limit) || 50), 200);
+  const off = Math.max(0, Number(offset) || 0);
+
+  if (supabaseEnabled) {
+    const applyFilters = (query) => {
+      let out = query;
+      if (studentId) out = out.eq("student_id", studentId);
+      if (status)    out = out.eq("status", status);
+      if (event)     out = out.eq("event", event);
+      // Phone is matched as a suffix: staff type the 10 digits they know, not
+      // the 91-prefixed form the normaliser stored.
+      if (phone) {
+        const digits = String(phone).replace(/\D/g, "");
+        if (digits) out = out.ilike("to_phone", `%${digits}`);
+      }
+      if (from) out = out.gte("created_at", from);
+      if (to)   out = out.lte("created_at", to);
+      // Free text across the body and the two human-readable name columns.
+      // ILIKE can't use an index; acceptable at this volume, and a pg_trgm GIN
+      // index on body is the fix if it bites.
+      if (q) {
+        const safe = String(q).replace(/[%,()]/g, " ").trim();
+        if (safe) {
+          out = out.or(
+            `body.ilike.%${safe}%,recipient_name.ilike.%${safe}%,student_name.ilike.%${safe}%,to_phone.ilike.%${safe}%`
+          );
+        }
+      }
+      return out;
+    };
+
+    const sel = await applyFilters(
+      supabase.from("whatsapp_messages").select("*", { count: "exact" })
+    ).order("created_at", { ascending: false }).range(off, off + lim - 1);
+
+    if (!sel.error) {
+      const messages = (sel.data || []).map(fromWhatsAppMessage);
+      const total = Number(sel.count) || messages.length + off;
+      return {
+        messages, total, hasMore: off + messages.length < total,
+        counts: await whatsAppCounts(),
+      };
+    }
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] whatsapp_messages fell back: ${sel.error.message}`);
+  }
+
+  // File store: same filters, applied in JS.
+  const db = fileRead();
+  let all = Array.isArray(db.whatsappMessages) ? db.whatsappMessages.map(fromWhatsAppMessage) : [];
+  if (studentId) all = all.filter((r) => r.studentId === studentId);
+  if (status)    all = all.filter((r) => r.status === status);
+  if (event)     all = all.filter((r) => r.event === event);
+  if (phone) {
+    const digits = String(phone).replace(/\D/g, "");
+    if (digits) all = all.filter((r) => String(r.toPhone || "").endsWith(digits));
+  }
+  if (from) all = all.filter((r) => r.createdAt && r.createdAt >= from);
+  if (to)   all = all.filter((r) => r.createdAt && r.createdAt <= to);
+  if (q) {
+    const needle = String(q).toLowerCase();
+    all = all.filter((r) =>
+      `${r.body || ""} ${r.recipientName || ""} ${r.studentName || ""} ${r.toPhone || ""}`
+        .toLowerCase().includes(needle));
+  }
+  const total = all.length;
+  const messages = all.slice(off, off + lim);
+  const since = whatsAppSince24h();
+  return {
+    messages, total, hasMore: off + messages.length < total,
+    counts: {
+      total,
+      sent24h: all.filter((r) => r.status === "sent" && (r.createdAt || "") >= since).length,
+      failed24h: all.filter((r) => r.status === "failed" && (r.createdAt || "") >= since).length,
+      queued: all.filter((r) => r.status === "queued").length,
+      skipped: all.filter((r) => r.status === "skipped").length,
+    },
+  };
+}
+
+const whatsAppSince24h = () => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+// Server-side counts for the KPI tiles and the diagnostic panel. Computed with
+// head-only count queries over the whole table, not over the loaded page.
+// Exported because the diagnostic route reports the same three numbers.
+export async function whatsAppCounts() {
+  const since = whatsAppSince24h();
+  if (!supabaseEnabled) {
+    const db = fileRead();
+    const all = Array.isArray(db.whatsappMessages) ? db.whatsappMessages : [];
+    const at = (r) => r.createdAt || r.created_at || "";
+    return {
+      total: all.length,
+      sent24h: all.filter((r) => r.status === "sent" && at(r) >= since).length,
+      failed24h: all.filter((r) => r.status === "failed" && at(r) >= since).length,
+      queued: all.filter((r) => r.status === "queued").length,
+      skipped: all.filter((r) => r.status === "skipped").length,
+    };
+  }
+  const head = async (build) => {
+    try {
+      const r = await build(supabase.from("whatsapp_messages").select("*", { count: "exact", head: true }));
+      return r.error ? 0 : (Number(r.count) || 0);
+    } catch { return 0; }
+  };
+  const [total, sent24h, failed24h, queued, skipped] = await Promise.all([
+    head((q) => q),
+    head((q) => q.eq("status", "sent").gte("created_at", since)),
+    head((q) => q.eq("status", "failed").gte("created_at", since)),
+    head((q) => q.eq("status", "queued")),
+    head((q) => q.eq("status", "skipped")),
+  ]);
+  return { total, sent24h, failed24h, queued, skipped };
+}
+
 
 export async function addActivity(row) {
   if (supabaseEnabled) {
@@ -3286,6 +3631,38 @@ export async function provisionParentLogin({ studentId, studentName, parentEmail
   }
 }
 
+// Provision a login for a donor so they can see the students they sponsor.
+// linkedId holds the donors.id — a third meaning for that column alongside
+// student-id and staff-id, which is consistent with how the rest of the app
+// already uses it.
+//
+// Returns { email, password } once, at creation. The password is never
+// retrievable afterwards; a lost one is reset, not recovered.
+export async function provisionDonorLogin({ donorId, donorName, email }) {
+  if (!donorId) throw new Error("donorId required");
+  const addr = String(email || "").trim().toLowerCase();
+  if (!addr || !/^\S+@\S+\.\S+$/.test(addr)) {
+    throw new Error("A valid email address is required for a donor login");
+  }
+  const existing = await getUserByEmail(addr);
+  if (existing) throw new Error("A user with that email already exists");
+
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const bytes = require("crypto").randomBytes(12);
+  const password = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+  const { hashPassword } = require("./auth.js");
+  const passwordHash = await hashPassword(password);
+  await createUser({
+    id: `USR-DNR-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 999)}`,
+    email: addr,
+    passwordHash,
+    role: "donor",
+    name: donorName || "Donor",
+    linkedId: donorId,
+  });
+  return { email: addr, password, role: "donor" };
+}
+
 function fileAddStaff(filled) {
   const db = fileRead();
   if (!Array.isArray(db.staff)) db.staff = [];
@@ -4009,14 +4386,19 @@ export async function removeTcRequest(id) {
 // One row per (teacherId, date). Self-marked by teachers, can be overridden
 // by principal/admin. File-only for now.
 const TEACHER_ATTENDANCE_STATUSES = ["present", "late", "absent", "leave"];
+export const TEACHER_ATTENDANCE_SOURCES = ["self", "admin", "exams-strip"];
 
-export async function markTeacherAttendance({ teacherId, teacherName, date, status, leaveReason, lateReason, markedBy }) {
+export async function markTeacherAttendance({
+  teacherId, teacherName, date, status, leaveReason, lateReason,
+  markedBy, markedById = null, markedFrom = null,
+}) {
   if (!teacherId || !date) throw new Error("teacherId + date required");
   const st = TEACHER_ATTENDANCE_STATUSES.includes(status) ? status : "present";
-  // For backward compat we keep storing the explanation in `leave_reason`
-  // (the existing column) regardless of whether the status is "leave" or
-  // "late". Callers can pass either `leaveReason` or `lateReason`; the API
-  // surfaces both names so client code reads cleanly.
+  const src = TEACHER_ATTENDANCE_SOURCES.includes(markedFrom) ? markedFrom : "self";
+  // Callers can pass either `leaveReason` or `lateReason`; the API surfaces
+  // both names so client code reads cleanly. Each now lands in its own column,
+  // but late notes written before that migration live in leave_reason — so we
+  // keep writing the late note to both and let readers prefer late_reason.
   const reasonText = st === "leave" ? (leaveReason || "")
                    : st === "late"  ? (lateReason  || leaveReason || "")
                    : null;
@@ -4028,30 +4410,134 @@ export async function markTeacherAttendance({ teacherId, teacherName, date, stat
     status: st,
     leaveReason: st === "leave" ? reasonText : null,
     lateReason:  st === "late"  ? reasonText : null,
+    markedFrom: src,
     markedBy: markedBy || teacherId,
     markedAt: new Date().toISOString(),
   };
+
+  // Read the current value BEFORE the upsert overwrites it — it is the only
+  // chance to capture what the mark is being corrected FROM.
+  let previousStatus = null;
+  const existing = await listTeacherAttendance({ teacherId, fromDate: date, toDate: date })
+    .catch(() => []);
+  previousStatus = existing.find((r) => r.date === date)?.status ?? null;
+
+  let saved = row;
+  let savedToCloud = false;
   if (supabaseEnabled) {
     const dbRow = {
       id: row.id, teacher_id: teacherId, teacher_name: row.teacherName,
       date, status: st,
-      // Reuse the existing leave_reason column for both leave + late notes.
-      // Avoids a schema migration for the late-reason rollout while still
-      // letting clients read it back via `lateReason` (mapped in fromTeacherAttendance).
       leave_reason: reasonText,
+      late_reason: st === "late" ? reasonText : null,
+      marked_from: src,
       marked_by: row.markedBy, marked_at: row.markedAt,
     };
     const up = await supabase.from("teacher_attendance").upsert(dbRow, { onConflict: "teacher_id,date" }).select().single();
-    if (!up.error) return fromTeacherAttendance(up.data);
-    if (!isSchemaMissError(up.error)) throw new Error(up.error.message);
+    if (!up.error) { saved = fromTeacherAttendance(up.data); savedToCloud = true; }
+    else if (!isSchemaMissError(up.error)) throw new Error(up.error.message);
+  }
+  if (!savedToCloud) {
+    const db = fileRead();
+    if (!Array.isArray(db.teacherAttendance)) db.teacherAttendance = [];
+    const idx = db.teacherAttendance.findIndex((r) => r.teacherId === teacherId && r.date === date);
+    if (idx !== -1) row.id = db.teacherAttendance[idx].id;
+    if (idx === -1) db.teacherAttendance.unshift(row); else db.teacherAttendance[idx] = row;
+    fileWrite(db);
+  }
+
+  // Best-effort, exactly like logAudit: the attendance mark is the thing that
+  // must not fail, and a lost log line is better than a lost mark.
+  try {
+    await appendTeacherAttendanceLog({
+      teacherId, teacherName: row.teacherName, date,
+      status: st, previousStatus,
+      leaveReason: reasonText,
+      markedBy: row.markedBy, markedById, markedFrom: src,
+    });
+  } catch (e) {
+    console.warn(`[db] teacher attendance log append failed: ${e.message}`);
+  }
+
+  // previousStatus rides along so the caller can say in the audit line what
+  // the mark was corrected from, without re-reading the row.
+  return { ...saved, previousStatus };
+}
+
+// ---------- teacher attendance log (append-only) ----------
+// One row per mark AND per re-mark, so a corrected status stays visible even
+// though teacher_attendance itself is upserted. Never joins the bootstrap
+// payload — it grows without bound and is read on demand by its own route.
+const fromTeacherAttendanceLog = (r) => r ? ({
+  id: r.id,
+  teacherId: r.teacher_id,
+  teacherName: r.teacher_name,
+  date: r.date,
+  status: r.status,
+  previousStatus: r.previous_status ?? null,
+  leaveReason: r.leave_reason ?? null,
+  markedBy: r.marked_by,
+  markedById: r.marked_by_id ?? null,
+  markedFrom: r.marked_from ?? null,
+  markedAt: r.marked_at,
+}) : null;
+
+export async function appendTeacherAttendanceLog({
+  teacherId, teacherName = null, date, status = null, previousStatus = null,
+  leaveReason = null, markedBy = null, markedById = null, markedFrom = null,
+} = {}) {
+  if (!teacherId || !date) throw new Error("teacherId + date required");
+  const id = `TAL-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+  const row = {
+    id,
+    teacher_id: teacherId,
+    teacher_name: teacherName || "—",
+    date,
+    status: status || null,
+    previous_status: previousStatus || null,
+    leave_reason: leaveReason || null,
+    marked_by: markedBy || null,
+    marked_by_id: markedById || null,
+    marked_from: markedFrom || null,
+    marked_at: new Date().toISOString(),
+  };
+  if (supabaseEnabled) {
+    const ins = await supabase.from("teacher_attendance_log").insert(row).select().single();
+    if (!ins.error) return fromTeacherAttendanceLog(ins.data);
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
   }
   const db = fileRead();
-  if (!Array.isArray(db.teacherAttendance)) db.teacherAttendance = [];
-  const idx = db.teacherAttendance.findIndex((r) => r.teacherId === teacherId && r.date === date);
-  if (idx !== -1) row.id = db.teacherAttendance[idx].id;
-  if (idx === -1) db.teacherAttendance.unshift(row); else db.teacherAttendance[idx] = row;
+  if (!Array.isArray(db.teacherAttendanceLog)) db.teacherAttendanceLog = [];
+  const local = {
+    id, teacherId, teacherName: row.teacher_name, date,
+    status: row.status, previousStatus: row.previous_status,
+    leaveReason: row.leave_reason, markedBy: row.marked_by,
+    markedById: row.marked_by_id, markedFrom: row.marked_from,
+    markedAt: row.marked_at,
+  };
+  db.teacherAttendanceLog.unshift(local);
   fileWrite(db);
-  return row;
+  return local;
+}
+
+export async function listTeacherAttendanceLog({ teacherId, date, limit = 200 } = {}) {
+  if (supabaseEnabled) {
+    let q = supabase.from("teacher_attendance_log").select("*")
+      .order("marked_at", { ascending: false }).limit(limit);
+    if (teacherId) q = q.eq("teacher_id", teacherId);
+    if (date)      q = q.eq("date", date);
+    const sel = await q;
+    if (!sel.error) return (sel.data || []).map(fromTeacherAttendanceLog);
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] teacher_attendance_log fell back: ${sel.error.message}`);
+  }
+  const db = fileRead();
+  let all = Array.isArray(db.teacherAttendanceLog) ? db.teacherAttendanceLog : [];
+  if (teacherId) all = all.filter((r) => r.teacherId === teacherId);
+  if (date)      all = all.filter((r) => r.date === date);
+  return all
+    .slice()
+    .sort((a, b) => String(b.markedAt || "").localeCompare(String(a.markedAt || "")))
+    .slice(0, limit);
 }
 
 export async function listTeacherAttendance({ teacherId, fromDate, toDate } = {}) {
@@ -4438,6 +4924,14 @@ export async function listExpenses({ scope } = {}) {
 }
 
 export async function removeExpense(id) {
+  // A finalised pay run stores the id of the expense row that recorded its
+  // net outflow. Deleting that row would leave the run pointing at nothing —
+  // a month marked paid with no money in the books. Finalised runs are
+  // immutable, so the only correct answer is to refuse.
+  const owner = await payRunOwningExpense(id);
+  if (owner) {
+    throw new Error(`Locked by payroll ${owner.period} (${owner.id}) — finalised pay runs can't be unwound; post an adjustment run instead`);
+  }
   if (supabaseEnabled) {
     const sel = await supabase.from("expenses").select("*").eq("id", id).maybeSingle();
     if (sel.data) {
@@ -5519,6 +6013,118 @@ export async function archiveDonor(id) {
   db.donors.splice(idx, 1);
   fileWrite(db);
   return removed;
+}
+
+// ---------- donor sponsorships ----------
+// Which donor funds which student. The link lives here rather than on the
+// student row precisely so that it cannot leak: a student record handed to a
+// parent or a teacher has no sponsorship field to strip.
+const fromSponsorship = (r) => r ? ({
+  id: r.id,
+  donorId: r.donor_id ?? r.donorId,
+  studentId: r.student_id ?? r.studentId,
+  allocatedBy: r.allocated_by ?? r.allocatedBy ?? null,
+  allocatedById: r.allocated_by_id ?? r.allocatedById ?? null,
+  allocatedAt: r.allocated_at ?? r.allocatedAt ?? null,
+  status: r.status ?? "active",
+  endedAt: r.ended_at ?? r.endedAt ?? null,
+  endedBy: r.ended_by ?? r.endedBy ?? null,
+  notes: r.notes ?? null,
+}) : null;
+
+export async function addSponsorship({ donorId, studentId, allocatedBy, allocatedById, notes } = {}) {
+  if (!donorId) throw new Error("donorId required");
+  if (!studentId) throw new Error("studentId required");
+  const id = `SPN-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+  const row = {
+    id, donor_id: donorId, student_id: studentId,
+    allocated_by: allocatedBy || null, allocated_by_id: allocatedById || null,
+    status: "active", notes: notes ? String(notes).slice(0, 500) : null,
+  };
+  if (supabaseEnabled) {
+    const ins = await supabase.from("donor_sponsorships").insert(row).select().single();
+    if (!ins.error) return fromSponsorship(ins.data);
+    // A re-allocation of a pair that was previously ended should revive the
+    // existing row rather than fail on the unique constraint.
+    if (/duplicate key|unique/i.test(ins.error.message)) {
+      const upd = await supabase.from("donor_sponsorships")
+        .update({
+          status: "active", ended_at: null, ended_by: null,
+          allocated_by: row.allocated_by, allocated_by_id: row.allocated_by_id,
+          allocated_at: new Date().toISOString(),
+        })
+        .eq("donor_id", donorId).eq("student_id", studentId).select().single();
+      if (!upd.error) return fromSponsorship(upd.data);
+    }
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.donorSponsorships)) db.donorSponsorships = [];
+  const existing = db.donorSponsorships.find((s) => s.donorId === donorId && s.studentId === studentId);
+  if (existing) {
+    existing.status = "active"; existing.endedAt = null; existing.endedBy = null;
+    existing.allocatedBy = allocatedBy || null;
+    existing.allocatedAt = new Date().toISOString();
+    fileWrite(db);
+    return existing;
+  }
+  const local = {
+    id, donorId, studentId, allocatedBy: allocatedBy || null,
+    allocatedById: allocatedById || null, allocatedAt: new Date().toISOString(),
+    status: "active", endedAt: null, endedBy: null, notes: row.notes,
+  };
+  db.donorSponsorships.unshift(local);
+  fileWrite(db);
+  return local;
+}
+
+export async function listSponsorships({ donorId, studentId, status = "active", limit = 500 } = {}) {
+  if (supabaseEnabled) {
+    let q = supabase.from("donor_sponsorships").select("*")
+      .order("allocated_at", { ascending: false }).limit(limit);
+    if (donorId)   q = q.eq("donor_id", donorId);
+    if (studentId) q = q.eq("student_id", studentId);
+    if (status && status !== "all") q = q.eq("status", status);
+    const sel = await q;
+    if (!sel.error) return (sel.data || []).map(fromSponsorship);
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] donor_sponsorships fell back: ${sel.error.message}`);
+  }
+  const db = fileRead();
+  let all = Array.isArray(db.donorSponsorships) ? db.donorSponsorships : [];
+  if (donorId)   all = all.filter((s) => s.donorId === donorId);
+  if (studentId) all = all.filter((s) => s.studentId === studentId);
+  if (status && status !== "all") all = all.filter((s) => (s.status || "active") === status);
+  return all.slice(0, limit);
+}
+
+// Soft-end: who allocated what, and when, stays on the record.
+export async function endSponsorship(id, actor) {
+  if (!id) throw new Error("id required");
+  const patch = { status: "ended", ended_at: new Date().toISOString(), ended_by: actor || null };
+  if (supabaseEnabled) {
+    const upd = await supabase.from("donor_sponsorships").update(patch).eq("id", id).select().maybeSingle();
+    if (!upd.error) return upd.data ? fromSponsorship(upd.data) : null;
+    if (!isSchemaMissError(upd.error)) throw new Error(upd.error.message);
+  }
+  const db = fileRead();
+  const row = (db.donorSponsorships || []).find((s) => s.id === id);
+  if (!row) return null;
+  row.status = "ended"; row.endedAt = patch.ended_at; row.endedBy = actor || null;
+  fileWrite(db);
+  return row;
+}
+
+// Student ids a donor currently sponsors. Returns [] for an unknown donor, so
+// a donor whose linkedId no longer resolves sees an empty dashboard rather
+// than defaulting into somebody else's data.
+export async function activeSponsoredStudentIds(donorId) {
+  if (!donorId) return [];
+  try {
+    const rows = await listSponsorships({ donorId, status: "active" });
+    return rows.map((r) => r.studentId).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // ---------- campaigns ----------
@@ -8527,6 +9133,9 @@ const fromStudentActivity = (r) => r ? ({
   activityLink: r.activity_link,
   certificateDocument: r.certificate_document,
   activityDate: r.activity_date,
+  // Nullable forward link to programs.id — arrives with the programs
+  // migration and is null on every row written before it.
+  programId: r.program_id ?? null,
   createdBy: r.created_by,
   createdAt: r.created_at,
 }) : null;
@@ -8663,6 +9272,47 @@ export async function getStudentReport(studentId) {
   };
 }
 
+// A student's fees broken down BY MONTH. STRICTLY READ-ONLY: it reads the same
+// pending rows + receipts the Fees register already shows and hands them to the
+// pure builder in fee-schedule.js. There is no fee_installments table and
+// deliberately so — the 587 historical receipts carry no month tag, so any
+// stored month attribution would be a guess frozen into the database. This
+// derives the view at read time instead, which keeps the guess visible and
+// correctable rather than permanent.
+export async function getStudentFeeSchedule(studentId) {
+  if (!studentId) throw new Error("studentId required");
+  const all = await readAllData().catch(() => ({}));
+  const student = (all.addedStudents || []).find((s) => s.id === studentId)
+    || (all.archivedStudents || []).find((s) => s.id === studentId)
+    || null;
+
+  // Same id-matching as getStudentReport: the trailing split("__")[0] is what
+  // catches legacy rows that stored the bare student id as the primary key.
+  const owns = (f) => (f.studentId || f.student_id || String(f.id || "").split("__")[0]) === studentId;
+  const pendingFees = (all.pendingFees || []).filter(owns);
+  const receipts = (all.recentFees || []).filter(owns);
+
+  const settings = await readSettings().catch(() => ({}));
+  const n = Number(settings?.fees?.scheduleMonths);
+  const y = Number(settings?.fees?.yearStartMonth);
+
+  // `joined` is the admission date — one-off charges are dated to that month
+  // rather than spread, so a late-joining student's kit fee lands where it
+  // was actually incurred.
+  const joined = student?.joined ? new Date(student.joined) : null;
+  const admissionMonth = joined && !isNaN(joined.getTime()) ? joined.getMonth() + 1 : null;
+
+  const schedule = buildMonthlySchedule({
+    pendingFees,
+    receipts,
+    monthsCount: Number.isFinite(n) && n > 0 ? n : DEFAULT_SCHEDULE_MONTHS,
+    yearStartMonth: Number.isFinite(y) && y >= 1 && y <= 12 ? y : DEFAULT_YEAR_START_MONTH,
+    admissionMonth,
+  });
+
+  return { student, schedule };
+}
+
 export async function removeStudentActivity(id) {
   if (supabaseEnabled) {
     const sel = await supabase.from("student_activities").select("*").eq("id", id).maybeSingle();
@@ -8679,6 +9329,274 @@ export async function removeStudentActivity(id) {
   db.studentActivities.splice(idx, 1);
   fileWrite(db);
   return removed;
+}
+
+// ---------- programs + program_participants -----------------------------
+// A program is an event the school runs (sports day, competition, workshop,
+// excursion) with a roster of students, day-of attendance and results.
+// Budgets here are informational: nothing in this module writes to the
+// expenses ledger.
+const fromProgram = (r) => r ? ({
+  id: r.id,
+  title: r.title,
+  category: r.category,
+  description: r.description,
+  startDate: r.start_date,
+  endDate: r.end_date,
+  venue: r.venue,
+  organizer: r.organizer,
+  organizerStaffId: r.organizer_staff_id,
+  audience: r.audience,
+  audienceLabel: r.audience_label,
+  status: r.status,
+  budgetPlanned: Number(r.budget_planned) || 0,
+  budgetActual: Number(r.budget_actual) || 0,
+  outcome: r.outcome,
+  notes: r.notes,
+  createdBy: r.created_by,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+}) : null;
+
+const fromProgramParticipant = (r) => r ? ({
+  programId: r.program_id,
+  studentId: r.student_id,
+  role: r.role,
+  attendance: r.attendance,
+  result: r.result,
+  position: r.position == null ? null : Number(r.position),
+  remarks: r.remarks,
+  addedBy: r.added_by,
+  addedAt: r.added_at,
+}) : null;
+
+export async function addProgram({
+  title, category = "other", description = null,
+  startDate, endDate = null, venue = null,
+  organizer = null, organizerStaffId = null,
+  audience = null, audienceLabel = null, status = "planned",
+  budgetPlanned = 0, budgetActual = 0,
+  outcome = null, notes = null, createdBy = null,
+} = {}) {
+  if (!title || !String(title).trim()) throw new Error("title required");
+  if (!startDate) throw new Error("startDate required");
+  const id = `PRG-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 9999)}`;
+  const row = {
+    id,
+    title: String(title).trim(),
+    category: category || "other",
+    description: description ? String(description).trim() : null,
+    start_date: startDate,
+    end_date: endDate || null,
+    venue: venue ? String(venue).trim() : null,
+    organizer: organizer ? String(organizer).trim() : null,
+    organizer_staff_id: organizerStaffId || null,
+    audience: audience || null,
+    audience_label: audienceLabel ? String(audienceLabel).trim() : null,
+    status: status || "planned",
+    budget_planned: Number(budgetPlanned) || 0,
+    budget_actual: Number(budgetActual) || 0,
+    outcome: outcome ? String(outcome).trim() : null,
+    notes: notes ? String(notes).trim() : null,
+    created_by: createdBy,
+  };
+  if (supabaseEnabled) {
+    const ins = await supabase.from("programs").insert(row).select().single();
+    if (!ins.error) return fromProgram(ins.data);
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.programs)) db.programs = [];
+  const now = new Date().toISOString();
+  const local = {
+    id, title: row.title, category: row.category, description: row.description,
+    startDate: row.start_date, endDate: row.end_date, venue: row.venue,
+    organizer: row.organizer, organizerStaffId: row.organizer_staff_id,
+    audience: row.audience, audienceLabel: row.audience_label,
+    status: row.status,
+    budgetPlanned: row.budget_planned, budgetActual: row.budget_actual,
+    outcome: row.outcome, notes: row.notes,
+    createdBy, createdAt: now, updatedAt: now,
+  };
+  db.programs.unshift(local);
+  fileWrite(db);
+  return local;
+}
+
+export async function listPrograms({ status, category, from, to, limit = 200 } = {}) {
+  if (supabaseEnabled) {
+    let q = supabase.from("programs").select("*").order("start_date", { ascending: false, nullsFirst: false }).limit(limit);
+    if (status)   q = q.eq("status", status);
+    if (category) q = q.eq("category", category);
+    if (from)     q = q.gte("start_date", from);
+    if (to)       q = q.lte("start_date", to);
+    const sel = await q;
+    if (!sel.error) return (sel.data || []).map(fromProgram);
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] programs fell back: ${sel.error.message}`);
+  }
+  const db = fileRead();
+  let all = Array.isArray(db.programs) ? db.programs : [];
+  if (status)   all = all.filter((p) => p.status === status);
+  if (category) all = all.filter((p) => p.category === category);
+  if (from)     all = all.filter((p) => String(p.startDate || "") >= from);
+  if (to)       all = all.filter((p) => String(p.startDate || "") <= to);
+  return all.slice(0, limit);
+}
+
+// Header + full participant roster. Separate from listPrograms so the
+// bootstrap payload stays small — rosters are only read when a program
+// is actually opened.
+export async function getProgram(id) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("programs").select("*").eq("id", id).maybeSingle();
+    if (!sel.error) {
+      if (!sel.data) return null;
+      const par = await supabase.from("program_participants").select("*").eq("program_id", id);
+      if (!par.error) {
+        return { ...fromProgram(sel.data), participants: (par.data || []).map(fromProgramParticipant) };
+      }
+      if (!isSchemaMissError(par.error)) console.warn(`[db] program_participants fell back: ${par.error.message}`);
+    } else if (!isSchemaMissError(sel.error)) {
+      console.warn(`[db] programs fell back: ${sel.error.message}`);
+    }
+  }
+  const db = fileRead();
+  const program = (Array.isArray(db.programs) ? db.programs : []).find((p) => p.id === id);
+  if (!program) return null;
+  const participants = (Array.isArray(db.programParticipants) ? db.programParticipants : [])
+    .filter((p) => p.programId === id);
+  return { ...program, participants };
+}
+
+export async function updateProgram(id, patch = {}) {
+  const dbPatch = { updated_at: new Date().toISOString() };
+  if ("title"            in patch) dbPatch.title              = patch.title;
+  if ("category"         in patch) dbPatch.category           = patch.category;
+  if ("description"      in patch) dbPatch.description        = patch.description;
+  if ("startDate"        in patch) dbPatch.start_date         = patch.startDate;
+  if ("endDate"          in patch) dbPatch.end_date           = patch.endDate;
+  if ("venue"            in patch) dbPatch.venue              = patch.venue;
+  if ("organizer"        in patch) dbPatch.organizer          = patch.organizer;
+  if ("organizerStaffId" in patch) dbPatch.organizer_staff_id = patch.organizerStaffId;
+  if ("audience"         in patch) dbPatch.audience           = patch.audience;
+  if ("audienceLabel"    in patch) dbPatch.audience_label     = patch.audienceLabel;
+  if ("status"           in patch) dbPatch.status             = patch.status;
+  if ("budgetPlanned"    in patch) dbPatch.budget_planned     = Number(patch.budgetPlanned) || 0;
+  if ("budgetActual"     in patch) dbPatch.budget_actual      = Number(patch.budgetActual) || 0;
+  if ("outcome"          in patch) dbPatch.outcome            = patch.outcome;
+  if ("notes"            in patch) dbPatch.notes              = patch.notes;
+  if (supabaseEnabled) {
+    const upd = await supabase.from("programs").update(dbPatch).eq("id", id).select().maybeSingle();
+    if (!upd.error && upd.data) return fromProgram(upd.data);
+    if (upd.error && !isSchemaMissError(upd.error)) console.warn(`[db] programs update fell back: ${upd.error.message}`);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.programs)) db.programs = [];
+  const idx = db.programs.findIndex((p) => p.id === id);
+  if (idx === -1) return null;
+  db.programs[idx] = { ...db.programs[idx], ...patch, updatedAt: dbPatch.updated_at };
+  fileWrite(db);
+  return db.programs[idx];
+}
+
+export async function removeProgram(id) {
+  if (supabaseEnabled) {
+    const sel = await supabase.from("programs").select("*").eq("id", id).maybeSingle();
+    if (sel.data) {
+      // program_participants has no FK to programs (the roster must survive
+      // a table that arrives via migration), so clear it explicitly.
+      await supabase.from("program_participants").delete().eq("program_id", id);
+      await supabase.from("programs").delete().eq("id", id);
+      return fromProgram(sel.data);
+    }
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.programs)) db.programs = [];
+  const idx = db.programs.findIndex((p) => p.id === id);
+  if (idx === -1) return null;
+  const removed = db.programs[idx];
+  db.programs.splice(idx, 1);
+  if (Array.isArray(db.programParticipants)) {
+    db.programParticipants = db.programParticipants.filter((p) => p.programId !== id);
+  }
+  fileWrite(db);
+  return removed;
+}
+
+// Replaces the roster wholesale with `studentIds`. Students already on the
+// roster keep their attendance/result — re-saving the roster after a sports
+// day must not wipe the marks that were just taken.
+export async function setProgramParticipants(programId, studentIds = [], addedBy = null) {
+  if (!programId) throw new Error("programId required");
+  const wanted = [...new Set((Array.isArray(studentIds) ? studentIds : []).filter(Boolean))];
+  if (supabaseEnabled) {
+    const sel = await supabase.from("program_participants").select("*").eq("program_id", programId);
+    if (!sel.error) {
+      const existing = new Set((sel.data || []).map((r) => r.student_id));
+      const toAdd = wanted.filter((sid) => !existing.has(sid));
+      const toDrop = [...existing].filter((sid) => !wanted.includes(sid));
+      if (toDrop.length) {
+        const del = await supabase.from("program_participants").delete()
+          .eq("program_id", programId).in("student_id", toDrop);
+        if (del.error) throw new Error(del.error.message);
+      }
+      if (toAdd.length) {
+        const ins = await supabase.from("program_participants").insert(
+          toAdd.map((sid) => ({ program_id: programId, student_id: sid, added_by: addedBy }))
+        );
+        if (ins.error) throw new Error(ins.error.message);
+      }
+      const after = await supabase.from("program_participants").select("*").eq("program_id", programId);
+      if (!after.error) return (after.data || []).map(fromProgramParticipant);
+      if (!isSchemaMissError(after.error)) throw new Error(after.error.message);
+    } else if (!isSchemaMissError(sel.error)) {
+      throw new Error(sel.error.message);
+    }
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.programParticipants)) db.programParticipants = [];
+  const kept = db.programParticipants.filter(
+    (p) => p.programId === programId && wanted.includes(p.studentId)
+  );
+  const keptIds = new Set(kept.map((p) => p.studentId));
+  const now = new Date().toISOString();
+  const added = wanted.filter((sid) => !keptIds.has(sid)).map((sid) => ({
+    programId, studentId: sid, role: "participant", attendance: "pending",
+    result: null, position: null, remarks: null, addedBy, addedAt: now,
+  }));
+  db.programParticipants = [
+    ...db.programParticipants.filter((p) => p.programId !== programId),
+    ...kept, ...added,
+  ];
+  fileWrite(db);
+  return [...kept, ...added];
+}
+
+// Per-participant edit — the attendance/result half of the module, which
+// teachers are allowed to touch (see the route's role split).
+export async function updateProgramParticipant(programId, studentId, patch = {}) {
+  if (!programId || !studentId) throw new Error("programId and studentId required");
+  const dbPatch = {};
+  if ("role"       in patch) dbPatch.role       = patch.role;
+  if ("attendance" in patch) dbPatch.attendance = patch.attendance;
+  if ("result"     in patch) dbPatch.result     = patch.result;
+  if ("position"   in patch) dbPatch.position   = patch.position == null || patch.position === "" ? null : Number(patch.position);
+  if ("remarks"    in patch) dbPatch.remarks    = patch.remarks;
+  if (supabaseEnabled) {
+    const upd = await supabase.from("program_participants").update(dbPatch)
+      .eq("program_id", programId).eq("student_id", studentId)
+      .select().maybeSingle();
+    if (!upd.error && upd.data) return fromProgramParticipant(upd.data);
+    if (upd.error && !isSchemaMissError(upd.error)) console.warn(`[db] program_participants update fell back: ${upd.error.message}`);
+  }
+  const db = fileRead();
+  if (!Array.isArray(db.programParticipants)) db.programParticipants = [];
+  const idx = db.programParticipants.findIndex((p) => p.programId === programId && p.studentId === studentId);
+  if (idx === -1) return null;
+  db.programParticipants[idx] = { ...db.programParticipants[idx], ...patch, ...("position" in patch ? { position: dbPatch.position } : {}) };
+  fileWrite(db);
+  return db.programParticipants[idx];
 }
 
 // ---------- custom_roles + role_feature_access --------------------------
@@ -9173,3 +10091,518 @@ export async function upsertDailyRitual({ studentId, ritualDate, q1Learned, q2Di
   fileWrite(db);
   return local;
 }
+
+// ---------- payroll (pay_runs + payslips) --------------------------------
+// A monthly pay run is a two-phase object: a freely recomputable draft, then
+// an immutable finalised record. The money only moves at finalise, and only
+// once, because `unique (period)` on pay_runs makes a second March a database
+// error. The file-store fallback has no constraints, so createPayRunDraft
+// repeats that check in JS on that path.
+
+const fromPayRun = (r) => r ? ({
+  id: r.id,
+  period: r.period,
+  status: r.status || "draft",
+  totalGross: Number(r.total_gross) || 0,
+  totalDeductions: Number(r.total_deductions) || 0,
+  totalNet: Number(r.total_net) || 0,
+  staffCount: Number(r.staff_count) || 0,
+  workingDays: Number(r.working_days) || 0,
+  expenseId: r.expense_id ?? null,
+  notes: r.notes ?? null,
+  createdBy: r.created_by ?? null,
+  createdAt: r.created_at ?? null,
+  finalisedAt: r.finalised_at ?? null,
+  finalisedBy: r.finalised_by ?? null,
+}) : null;
+
+const fromPayslip = (r) => r ? ({
+  id: r.id,
+  runId: r.run_id,
+  staffId: r.staff_id,
+  staffName: r.staff_name ?? null,
+  staffRole: r.staff_role ?? null,
+  period: r.period ?? null,
+  baseSalary: Number(r.base_salary) || 0,
+  presentDays: Number(r.present_days) || 0,
+  absentDays: Number(r.absent_days) || 0,
+  leaveDays: Number(r.leave_days) || 0,
+  workingDays: Number(r.working_days) || 0,
+  lopDays: Number(r.lop_days) || 0,
+  lopAmount: Number(r.lop_amount) || 0,
+  allowances: Number(r.allowances) || 0,
+  deductions: Number(r.deductions) || 0,
+  gross: Number(r.gross) || 0,
+  net: Number(r.net) || 0,
+  attendanceSource: r.attendance_source || "manual",
+  notes: r.notes ?? null,
+  createdAt: r.created_at ?? null,
+}) : null;
+
+// Period strings are the primary key of the whole feature, so they are
+// validated rather than coerced — "2026-3" and "2026-13" both reach the
+// unique index as distinct values and would defeat the double-pay guard.
+function normalisePeriod(period) {
+  const p = String(period || "").trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) throw new Error("period must be YYYY-MM");
+  return p;
+}
+
+// Default working days: calendar days in the month minus Sundays. Editable
+// per run because the school closes for stretches the calendar can't know
+// about. Deliberately NOT derived from the attendance row count — a teacher
+// with 3 attendance rows would otherwise be paid 3 days' salary.
+function defaultWorkingDays(period) {
+  const [y, m] = normalisePeriod(period).split("-").map(Number);
+  const days = new Date(y, m, 0).getDate();
+  let sundays = 0;
+  for (let d = 1; d <= days; d++) {
+    if (new Date(y, m - 1, d).getDay() === 0) sundays++;
+  }
+  return days - sundays;
+}
+
+const payRunId = () => `PR-${Date.now().toString(36).toUpperCase()}-${String(Math.floor(Math.random() * 1e4)).padStart(4, "0")}`;
+const payslipId = () => `PS-${Date.now().toString(36).toUpperCase()}-${String(Math.floor(Math.random() * 1e4)).padStart(4, "0")}`;
+
+// gross = base + allowances; net = gross - lop - deductions. Clamped at zero
+// so an over-entered deduction can never produce a negative payable.
+function payslipTotals({ baseSalary, allowances, deductions, lopAmount }) {
+  const gross = Math.max(0, Math.round(baseSalary) + Math.round(allowances));
+  const net = Math.max(0, gross - Math.round(lopAmount) - Math.round(deductions));
+  return { gross, net };
+}
+
+function recomputeRunTotals(slips) {
+  return {
+    staffCount: slips.length,
+    totalGross: slips.reduce((a, s) => a + (Number(s.gross) || 0), 0),
+    // Everything withheld, LOP included — the admin wants one "what we kept
+    // back" figure, not two the screen has to add up.
+    totalDeductions: slips.reduce((a, s) => a + (Number(s.deductions) || 0) + (Number(s.lopAmount) || 0), 0),
+    totalNet: slips.reduce((a, s) => a + (Number(s.net) || 0), 0),
+  };
+}
+
+// Build one draft payslip per active staff member for `period`.
+//
+// The staff→user hop is the dangerous part. teacher_attendance is keyed off
+// users.id, staff rows carry an email, and the two are bridged by lowercased
+// email match (the same bridge recomputeStaffPerformance uses). That match
+// fails for any teacher whose staff email differs from their login email, or
+// who has no login at all. recomputeStaffPerformance responds by silently
+// falling back to a stale score — harmless for a dashboard number, but here
+// it would quietly underpay a real person.
+//
+// So: no match => attendance_source 'unmatched', lop_days 0, FULL base salary.
+// Overpaying is recoverable from the next run; underpaying a teacher because
+// two email fields disagree is not. The draft screen surfaces the count.
+async function buildDraftPayslips({ period, workingDays }) {
+  const data = await readAllData();
+  const staff = (data.staff || []).filter((s) => !s.archivedAt);
+
+  let users = [];
+  try { users = await listUsers(); } catch {}
+  const userByEmail = new Map();
+  for (const u of users) {
+    const em = (u.email || "").toLowerCase();
+    if (em && !userByEmail.has(em)) userByEmail.set(em, u);
+  }
+
+  const [y, m] = period.split("-");
+  const fromDate = `${y}-${m}-01`;
+  const toDate = `${y}-${m}-${String(new Date(Number(y), Number(m), 0).getDate()).padStart(2, "0")}`;
+
+  const out = [];
+  for (const s of staff) {
+    const baseSalary = Math.max(0, Math.round(Number(s.salary) || 0));
+    const email = (s.email || "").toLowerCase();
+    const user = email ? userByEmail.get(email) : null;
+
+    let presentDays = 0, absentDays = 0, leaveDays = 0, lopDays = 0;
+    let attendanceSource = "unmatched";
+    if (user) {
+      attendanceSource = "matched";
+      try {
+        const recs = await listTeacherAttendance({ teacherId: user.id, fromDate, toDate });
+        for (const r of recs) {
+          if (r.status === "absent") absentDays++;
+          else if (r.status === "leave") leaveDays++;
+          else presentDays++;   // present + late both count as worked
+        }
+        // Only recorded absences cost pay. A day with no attendance row is
+        // not evidence of absence — attendance is marked by hand here and
+        // gaps are routine, so treating them as LOP would dock a teacher for
+        // the office forgetting to mark the register.
+        lopDays = absentDays;
+      } catch {
+        // Attendance read failed: fall back to the unmatched rule rather
+        // than guessing at LOP from a partial read.
+        attendanceSource = "unmatched";
+        presentDays = 0; absentDays = 0; leaveDays = 0; lopDays = 0;
+      }
+    }
+
+    const lopAmount = workingDays > 0
+      ? Math.round((baseSalary / workingDays) * lopDays)
+      : 0;
+    const { gross, net } = payslipTotals({ baseSalary, allowances: 0, deductions: 0, lopAmount });
+    out.push({
+      id: payslipId(),
+      staffId: s.id,
+      staffName: s.name || "—",
+      staffRole: s.role || null,
+      period,
+      baseSalary,
+      presentDays, absentDays, leaveDays,
+      workingDays,
+      lopDays, lopAmount,
+      allowances: 0, deductions: 0,
+      gross, net,
+      attendanceSource,
+      notes: null,
+    });
+  }
+  return out;
+}
+
+const toPayRunRow = (r) => ({
+  id: r.id, period: r.period, status: r.status,
+  total_gross: r.totalGross, total_deductions: r.totalDeductions,
+  total_net: r.totalNet, staff_count: r.staffCount,
+  working_days: r.workingDays,
+  expense_id: r.expenseId ?? null, notes: r.notes ?? null,
+  created_by: r.createdBy ?? null,
+  finalised_at: r.finalisedAt ?? null, finalised_by: r.finalisedBy ?? null,
+});
+
+const toPayslipRow = (s, runId) => ({
+  id: s.id, run_id: runId, staff_id: s.staffId,
+  staff_name: s.staffName, staff_role: s.staffRole, period: s.period,
+  base_salary: s.baseSalary,
+  present_days: s.presentDays, absent_days: s.absentDays,
+  leave_days: s.leaveDays, working_days: s.workingDays,
+  lop_days: s.lopDays, lop_amount: s.lopAmount,
+  allowances: s.allowances, deductions: s.deductions,
+  gross: s.gross, net: s.net,
+  attendance_source: s.attendanceSource, notes: s.notes ?? null,
+});
+
+export async function createPayRunDraft({ period, workingDays, notes = null, actor = null } = {}) {
+  const p = normalisePeriod(period);
+  const wd = Math.max(1, Math.round(Number(workingDays) || defaultWorkingDays(p)));
+  const slips = await buildDraftPayslips({ period: p, workingDays: wd });
+  if (!slips.length) throw new Error("No active staff to pay");
+  const totals = recomputeRunTotals(slips);
+  const run = {
+    id: payRunId(), period: p, status: "draft",
+    ...totals, workingDays: wd,
+    expenseId: null, notes: notes ? String(notes).trim() : null,
+    createdBy: actor || null, createdAt: new Date().toISOString(),
+    finalisedAt: null, finalisedBy: null,
+  };
+
+  if (supabaseEnabled) {
+    const ins = await supabase.from("pay_runs").insert(toPayRunRow(run)).select().single();
+    if (!ins.error) {
+      const slipIns = await supabase.from("payslips").insert(slips.map((s) => toPayslipRow(s, run.id)));
+      if (slipIns.error) {
+        // A header with no payslips is a run that looks payable and isn't.
+        // Roll it back so the period stays free for a clean retry.
+        await supabase.from("pay_runs").delete().eq("id", run.id);
+        throw new Error(`Could not save payslips: ${slipIns.error.message}`);
+      }
+      return { ...fromPayRun(ins.data), payslips: slips };
+    }
+    // 23505 = unique violation; the only unique on pay_runs is (period).
+    if (ins.error.code === "23505" || /duplicate key|already exists/i.test(ins.error.message || "")) {
+      throw new Error(`${p} already has a pay run — delete the draft or post an adjustment run`);
+    }
+    if (!isSchemaMissError(ins.error)) throw new Error(ins.error.message);
+  }
+
+  const db = fileRead();
+  if (!Array.isArray(db.payRuns)) db.payRuns = [];
+  if (!Array.isArray(db.payslips)) db.payslips = [];
+  // The JSON store has no unique index, so the double-pay guard has to be
+  // written out by hand here. Without it the file backend would happily
+  // accept a second March.
+  if (db.payRuns.some((r) => r.period === p)) {
+    throw new Error(`${p} already has a pay run — delete the draft or post an adjustment run`);
+  }
+  db.payRuns.unshift(run);
+  for (const s of slips) db.payslips.push({ ...s, runId: run.id, createdAt: run.createdAt });
+  fileWrite(db);
+  return { ...run, payslips: slips };
+}
+
+export async function listPayRuns({ limit = 36 } = {}) {
+  if (supabaseEnabled) {
+    const sel = await supabase.from("pay_runs").select("*").order("period", { ascending: false }).limit(limit);
+    if (!sel.error) return (sel.data || []).map(fromPayRun);
+    if (!isSchemaMissError(sel.error)) console.warn(`[db] pay_runs fell back: ${sel.error.message}`);
+  }
+  const db = fileRead();
+  const all = Array.isArray(db.payRuns) ? db.payRuns : [];
+  return [...all].sort((a, b) => String(b.period).localeCompare(String(a.period))).slice(0, limit);
+}
+
+export async function getPayRun(id) {
+  if (!id) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("pay_runs").select("*").eq("id", id).maybeSingle();
+    if (!sel.error && sel.data) {
+      const slips = await supabase.from("payslips").select("*").eq("run_id", id).order("staff_name");
+      if (!slips.error) {
+        return { ...fromPayRun(sel.data), payslips: (slips.data || []).map(fromPayslip) };
+      }
+      if (!isSchemaMissError(slips.error)) throw new Error(slips.error.message);
+    }
+    if (sel.error && !isSchemaMissError(sel.error)) throw new Error(sel.error.message);
+  }
+  const db = fileRead();
+  const run = (db.payRuns || []).find((r) => r.id === id);
+  if (!run) return null;
+  const slips = (db.payslips || [])
+    .filter((s) => s.runId === id)
+    .sort((a, b) => String(a.staffName || "").localeCompare(String(b.staffName || "")));
+  return { ...run, payslips: slips };
+}
+
+// Which finalised run, if any, owns this expense row. Used by removeExpense
+// to refuse a delete that would orphan a run's expense_id.
+export async function payRunOwningExpense(expenseId) {
+  if (!expenseId) return null;
+  if (supabaseEnabled) {
+    const sel = await supabase.from("pay_runs").select("*")
+      .eq("expense_id", expenseId).eq("status", "finalised").maybeSingle();
+    if (!sel.error) { if (sel.data) return fromPayRun(sel.data); }
+    else if (!isSchemaMissError(sel.error)) console.warn(`[db] pay_runs lookup fell back: ${sel.error.message}`);
+  }
+  try {
+    const db = fileRead();
+    return (db.payRuns || []).find((r) => r.expenseId === expenseId && r.status === "finalised") || null;
+  } catch { return null; }
+}
+
+// Edit one draft payslip. Only the three admin-discretion fields plus notes
+// are writable — base salary and the attendance figures are snapshots and
+// stay as recorded, so a changed number is always traceable to a person.
+export async function updatePayslip({ id, allowances, deductions, lopDays, notes } = {}) {
+  if (!id) throw new Error("id required");
+
+  const apply = (slip, runWorkingDays) => {
+    const workingDays = Math.max(1, Number(slip.workingDays) || Number(runWorkingDays) || 1);
+    const nextAllow = allowances === undefined ? slip.allowances : Math.max(0, Math.round(Number(allowances) || 0));
+    const nextDeduct = deductions === undefined ? slip.deductions : Math.max(0, Math.round(Number(deductions) || 0));
+    const nextLopDays = lopDays === undefined
+      ? Number(slip.lopDays) || 0
+      : Math.min(workingDays, Math.max(0, Number(lopDays) || 0));
+    const lopAmount = Math.round((Number(slip.baseSalary) || 0) / workingDays * nextLopDays);
+    const { gross, net } = payslipTotals({
+      baseSalary: Number(slip.baseSalary) || 0,
+      allowances: nextAllow, deductions: nextDeduct, lopAmount,
+    });
+    return {
+      allowances: nextAllow, deductions: nextDeduct,
+      lopDays: nextLopDays, lopAmount, gross, net,
+      notes: notes === undefined ? (slip.notes ?? null) : (notes ? String(notes).trim() : null),
+    };
+  };
+
+  if (supabaseEnabled) {
+    const sel = await supabase.from("payslips").select("*").eq("id", id).maybeSingle();
+    if (!sel.error && sel.data) {
+      const slip = fromPayslip(sel.data);
+      const runSel = await supabase.from("pay_runs").select("*").eq("id", slip.runId).maybeSingle();
+      const run = fromPayRun(runSel.data);
+      if (!run) throw new Error("Pay run not found");
+      if (run.status !== "draft") throw new Error("Finalised pay runs are immutable — post an adjustment run");
+      const patch = apply(slip, run.workingDays);
+      const upd = await supabase.from("payslips").update({
+        allowances: patch.allowances, deductions: patch.deductions,
+        lop_days: patch.lopDays, lop_amount: patch.lopAmount,
+        gross: patch.gross, net: patch.net, notes: patch.notes,
+      }).eq("id", id).select().single();
+      if (upd.error) throw new Error(upd.error.message);
+      // The header totals are a cached sum of the payslips, so they have to
+      // be rewritten in the same operation or the Finalise button would
+      // record the pre-edit amount.
+      const all = await supabase.from("payslips").select("*").eq("run_id", slip.runId);
+      const totals = recomputeRunTotals((all.data || []).map(fromPayslip));
+      await supabase.from("pay_runs").update({
+        total_gross: totals.totalGross, total_deductions: totals.totalDeductions,
+        total_net: totals.totalNet, staff_count: totals.staffCount,
+      }).eq("id", slip.runId);
+      return fromPayslip(upd.data);
+    }
+    if (sel.error && !isSchemaMissError(sel.error)) throw new Error(sel.error.message);
+  }
+
+  const db = fileRead();
+  if (!Array.isArray(db.payslips)) db.payslips = [];
+  const idx = db.payslips.findIndex((s) => s.id === id);
+  if (idx === -1) throw new Error("Payslip not found");
+  const slip = db.payslips[idx];
+  const runIdx = (db.payRuns || []).findIndex((r) => r.id === slip.runId);
+  if (runIdx === -1) throw new Error("Pay run not found");
+  if (db.payRuns[runIdx].status !== "draft") throw new Error("Finalised pay runs are immutable — post an adjustment run");
+  db.payslips[idx] = { ...slip, ...apply(slip, db.payRuns[runIdx].workingDays) };
+  const totals = recomputeRunTotals(db.payslips.filter((s) => s.runId === slip.runId));
+  db.payRuns[runIdx] = { ...db.payRuns[runIdx], ...totals };
+  fileWrite(db);
+  return db.payslips[idx];
+}
+
+// Change the LOP divisor for a whole draft run and re-derive every lop_amount
+// from it. Separate from updatePayslip because working_days is a property of
+// the month, not of one teacher.
+export async function setPayRunWorkingDays({ id, workingDays } = {}) {
+  if (!id) throw new Error("id required");
+  const wd = Math.round(Number(workingDays) || 0);
+  if (!(wd >= 1 && wd <= 31)) throw new Error("workingDays must be between 1 and 31");
+
+  const reslip = (s) => {
+    const lopDays = Math.min(wd, Number(s.lopDays) || 0);
+    const lopAmount = Math.round((Number(s.baseSalary) || 0) / wd * lopDays);
+    const { gross, net } = payslipTotals({
+      baseSalary: Number(s.baseSalary) || 0,
+      allowances: Number(s.allowances) || 0,
+      deductions: Number(s.deductions) || 0,
+      lopAmount,
+    });
+    return { ...s, workingDays: wd, lopDays, lopAmount, gross, net };
+  };
+
+  if (supabaseEnabled) {
+    const runSel = await supabase.from("pay_runs").select("*").eq("id", id).maybeSingle();
+    if (!runSel.error && runSel.data) {
+      const run = fromPayRun(runSel.data);
+      if (run.status !== "draft") throw new Error("Finalised pay runs are immutable — post an adjustment run");
+      const all = await supabase.from("payslips").select("*").eq("run_id", id);
+      if (all.error) throw new Error(all.error.message);
+      const next = (all.data || []).map(fromPayslip).map(reslip);
+      for (const s of next) {
+        const up = await supabase.from("payslips").update({
+          working_days: s.workingDays, lop_days: s.lopDays, lop_amount: s.lopAmount,
+          gross: s.gross, net: s.net,
+        }).eq("id", s.id);
+        if (up.error) throw new Error(up.error.message);
+      }
+      const totals = recomputeRunTotals(next);
+      const upd = await supabase.from("pay_runs").update({
+        working_days: wd,
+        total_gross: totals.totalGross, total_deductions: totals.totalDeductions,
+        total_net: totals.totalNet, staff_count: totals.staffCount,
+      }).eq("id", id).select().single();
+      if (upd.error) throw new Error(upd.error.message);
+      return { ...fromPayRun(upd.data), payslips: next };
+    }
+    if (runSel.error && !isSchemaMissError(runSel.error)) throw new Error(runSel.error.message);
+  }
+
+  const db = fileRead();
+  const runIdx = (db.payRuns || []).findIndex((r) => r.id === id);
+  if (runIdx === -1) throw new Error("Pay run not found");
+  if (db.payRuns[runIdx].status !== "draft") throw new Error("Finalised pay runs are immutable — post an adjustment run");
+  if (!Array.isArray(db.payslips)) db.payslips = [];
+  db.payslips = db.payslips.map((s) => (s.runId === id ? reslip(s) : s));
+  const mine = db.payslips.filter((s) => s.runId === id);
+  db.payRuns[runIdx] = { ...db.payRuns[runIdx], workingDays: wd, ...recomputeRunTotals(mine) };
+  fileWrite(db);
+  return { ...db.payRuns[runIdx], payslips: mine };
+}
+
+// Finalise: record the money, THEN mark the run paid.
+//
+// The ordering is deliberate and not interchangeable. Writing the expense
+// first risks an orphan expense row if the status flip fails — visible in
+// Money, correctable by hand. Flipping status first risks a run that reads
+// "paid" with nothing in the books, which nobody notices until an audit.
+//
+// One expense row per run, not one per teacher: eighteen ₹25k Salary rows
+// would bury every other category in Money and Reports.
+export async function finalisePayRun({ id, actor = null } = {}) {
+  const current = await getPayRun(id);
+  if (!current) throw new Error("Pay run not found");
+  if (current.status === "finalised") throw new Error("Already finalised");
+  if (!current.payslips?.length) throw new Error("Nothing to pay — this run has no payslips");
+  const totals = recomputeRunTotals(current.payslips);
+  if (totals.totalNet <= 0) throw new Error("Net payable is zero — nothing to record");
+
+  const expense = await addExpense({
+    scope: "school",
+    category: "Salary",
+    amount: totals.totalNet,
+    memo: `Payroll ${current.period} · ${totals.staffCount} staff`,
+    date: `${current.period}-01`,
+    paymentMethod: "Bank transfer",
+    recordedBy: actor || "payroll",
+  });
+
+  const finalisedAt = new Date().toISOString();
+  const patch = {
+    status: "finalised",
+    expense_id: expense.id,
+    total_gross: totals.totalGross, total_deductions: totals.totalDeductions,
+    total_net: totals.totalNet, staff_count: totals.staffCount,
+    finalised_at: finalisedAt, finalised_by: actor || null,
+  };
+
+  if (supabaseEnabled) {
+    // Guarded on status so two admins clicking Finalise at once can only
+    // produce one finalised run; the loser's update matches no row.
+    const upd = await supabase.from("pay_runs").update(patch)
+      .eq("id", id).eq("status", "draft").select().maybeSingle();
+    if (!upd.error && upd.data) return { ...fromPayRun(upd.data), payslips: current.payslips };
+    if (!upd.error && !upd.data) {
+      throw new Error(`Run was finalised by someone else — expense ${expense.id} was recorded and must be removed by hand`);
+    }
+    if (!isSchemaMissError(upd.error)) {
+      throw new Error(`Expense ${expense.id} was recorded but the run could not be marked paid: ${upd.error.message}`);
+    }
+  }
+
+  const db = fileRead();
+  const idx = (db.payRuns || []).findIndex((r) => r.id === id);
+  if (idx === -1) throw new Error("Pay run not found");
+  if (db.payRuns[idx].status !== "draft") {
+    throw new Error(`Run was finalised by someone else — expense ${expense.id} was recorded and must be removed by hand`);
+  }
+  db.payRuns[idx] = {
+    ...db.payRuns[idx],
+    status: "finalised", expenseId: expense.id,
+    ...totals, finalisedAt, finalisedBy: actor || null,
+  };
+  fileWrite(db);
+  return { ...db.payRuns[idx], payslips: current.payslips };
+}
+
+// Drafts only. A finalised run has money behind it, so the reversal path is
+// a new adjustment run — never a delete.
+export async function removePayRunDraft(id) {
+  if (!id) return null;
+  const run = await getPayRun(id);
+  if (!run) return null;
+  if (run.status !== "draft") throw new Error("Finalised pay runs can't be deleted — post an adjustment run instead");
+
+  if (supabaseEnabled) {
+    const del = await supabase.from("pay_runs").delete().eq("id", id).eq("status", "draft");
+    if (!del.error) {
+      // No FK cascade between payslips and pay_runs (payslips must outlive a
+      // run row for audit), so the children are cleared explicitly.
+      await supabase.from("payslips").delete().eq("run_id", id);
+      return run;
+    }
+    if (!isSchemaMissError(del.error)) throw new Error(del.error.message);
+  }
+  const db = fileRead();
+  const idx = (db.payRuns || []).findIndex((r) => r.id === id);
+  if (idx === -1) return null;
+  db.payRuns.splice(idx, 1);
+  db.payslips = (db.payslips || []).filter((s) => s.runId !== id);
+  fileWrite(db);
+  return run;
+}
+
+export const __PAYROLL_META = { defaultWorkingDays };

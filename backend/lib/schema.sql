@@ -565,14 +565,38 @@ create table if not exists teacher_attendance (
   teacher_id text not null,
   teacher_name text,
   date text not null,
-  status text default 'present',     -- 'present' | 'absent' | 'leave'
+  status text default 'present',     -- 'present' | 'late' | 'absent' | 'leave'
   leave_reason text,
+  late_reason text,
+  marked_from text,                  -- 'self' | 'admin' | 'exams-strip'
   marked_by text,
   marked_at timestamptz default now(),
   unique (teacher_id, date)
 );
 create index if not exists idx_teacher_attendance_date on teacher_attendance (date desc);
 alter table teacher_attendance enable row level security;
+
+-- Append-only companion to teacher_attendance. Because the mark itself is an
+-- upsert on (teacher_id, date), a correction overwrites the old value — this
+-- table keeps every mark and re-mark so a changed status stays visible, along
+-- with which screen it came from. Grows unbounded, so it is read on demand
+-- from its own route and never part of the bootstrap payload.
+create table if not exists teacher_attendance_log (
+  id text primary key,
+  teacher_id text not null,
+  teacher_name text,
+  date text not null,                 -- the day the attendance is FOR
+  status text,
+  previous_status text,               -- null on the first mark for that day
+  leave_reason text,
+  marked_by text,
+  marked_by_id text,
+  marked_from text,                   -- 'self' | 'admin' | 'exams-strip'
+  marked_at timestamptz default now()
+);
+create index if not exists idx_teacher_attendance_log_who on teacher_attendance_log (teacher_id, date);
+create index if not exists idx_teacher_attendance_log_at on teacher_attendance_log (marked_at desc);
+alter table teacher_attendance_log enable row level security;
 
 -- ---------- exams + marks ----------
 create table if not exists exams (
@@ -1200,3 +1224,195 @@ create table if not exists scale_daily_rituals (
 );
 create index if not exists idx_scale_rituals_student on scale_daily_rituals (student_id, ritual_date desc);
 alter table scale_daily_rituals enable row level security;
+
+-- ---------- programs (school events the school itself conducts) ----------
+-- Sports day, inter-house competitions, workshops, excursions,
+-- celebrations. Distinct from student_activities, which is a per-student
+-- achievement ledger with a free-text event_name: a program is the event
+-- itself, with a participant roster, attendance and results hanging off it.
+-- Budget columns are INFORMATIONAL only — no expense row is ever created
+-- from a program; the expenses ledger stays the single source of truth for
+-- money actually spent.
+create table if not exists programs (
+  id                text primary key,
+  title             text not null,
+  category          text,               -- 'sports' | 'cultural' | 'academic' | 'competition' | 'excursion' | 'workshop' | 'celebration' | 'other'
+  description       text,
+  start_date        date not null,
+  end_date          date,               -- null for a single-day event
+  venue             text,
+  organizer         text,               -- free-text name, kept even if the staff row goes
+  -- Deliberately NOT a foreign key: staff are soft-deleted via archived_at,
+  -- and a hard reference would block an archive/delete of a staff row that
+  -- once organised an event years ago.
+  organizer_staff_id text,
+  audience          text,               -- 'school' | 'class' | 'selected' — how the roster was picked
+  audience_label    text,               -- human label, e.g. "Classes VI–VIII"
+  status            text default 'planned',   -- 'planned' | 'ongoing' | 'completed' | 'cancelled'
+  budget_planned    int default 0,
+  budget_actual     int default 0,
+  outcome           text,               -- what actually happened, filled after the event
+  notes             text,
+  created_by        text references users(id),
+  created_at        timestamptz default now(),
+  updated_at        timestamptz default now()
+);
+create index if not exists idx_programs_start on programs (start_date desc);
+create index if not exists idx_programs_status on programs (status, start_date desc);
+alter table programs enable row level security;
+
+-- ---------- program_participants ----------------------------------------
+-- Keyed by student_id, not email: most students have no login, so the
+-- meetings table's email-keyed participant model can't represent them.
+create table if not exists program_participants (
+  program_id  text not null,
+  student_id  text not null references students(id) on delete cascade,
+  role        text default 'participant',  -- 'participant' | 'winner' | 'volunteer' | 'captain' | ...
+  attendance  text default 'pending',      -- 'pending' | 'present' | 'absent' | 'excused'
+  result      text,                        -- free-text outcome, e.g. "1st — 100m"
+  position    int,                         -- rank where the event is scored
+  remarks     text,
+  added_by    text,
+  added_at    timestamptz default now(),
+  primary key (program_id, student_id)
+);
+create index if not exists idx_program_participants_student on program_participants (student_id);
+
+alter table program_participants enable row level security;
+
+-- Forward link so an achievement logged against a student can later be
+-- traced back to the program that produced it. Nullable and unused by the
+-- current code — present now so wiring it up is a data task, not a schema
+-- change on a live database.
+alter table student_activities add column if not exists program_id text;
+
+-- ---------- whatsapp_messages -------------------------------------------
+-- Every message the CRM sends, body included. The audit_log row for a send
+-- only ever carried the phone number and an outcome word, so "what did we
+-- actually send this parent?" was unanswerable and a failed send could not
+-- be retried — the text was gone.
+--
+-- media_url holds a URL only, NEVER a base64 data URI: fees/pay sends the
+-- receipt as a ~50-200KB PNG data URI, and storing those would grow the
+-- table by megabytes a day and drag the bytes into every list query. For a
+-- data URI the recorder sets has_media and leaves media_url null; the
+-- receipt is reproducible from the fee row.
+-- status: 'queued' | 'sent' | 'failed' | 'skipped'
+create table if not exists whatsapp_messages (
+  id                  text primary key,
+  provider            text,                      -- 'evolution' | 'meta'
+  provider_message_id text,                      -- Evolution key.id — join target for a delivery webhook
+  event               text not null,             -- fee_paid | fee_qr_send | fee_reminder | broadcast | test
+  direction           text default 'out',
+  to_phone            text,
+  recipient_name      text,
+  student_id          text,
+  student_name        text,
+  body                text,                      -- the text sent, or the image caption
+  media_url           text,
+  has_media           boolean default false,
+  status              text default 'queued',
+  error               text,
+  provider_response   jsonb,                     -- truncated to 2KB before insert
+  actor               text,
+  actor_id            text,
+  broadcast_id        text,
+  retry_of            text,                      -- id of the row this is a manual re-send of
+  attempt             int default 1,
+  created_at          timestamptz default now(),
+  sent_at             timestamptz,
+  delivered_at        timestamptz
+);
+create index if not exists idx_wa_created on whatsapp_messages (created_at desc);
+create index if not exists idx_wa_student on whatsapp_messages (student_id);
+create index if not exists idx_wa_status  on whatsapp_messages (status);
+create index if not exists idx_wa_phone   on whatsapp_messages (to_phone);
+alter table whatsapp_messages enable row level security;
+
+-- ---------- donor_sponsorships -----------------------------------------
+-- Which donor funds which student. Deliberately its own table rather than a
+-- column on `students`: a column would ride along in fromStudent() and appear
+-- in every student payload, so keeping it from parents and students would mean
+-- remembering to strip it in the parent scope, the teacher scope and the
+-- client-side re-scope. As a separate table there is simply nothing to leak —
+-- the student row a parent receives has no sponsorship field at all.
+--
+-- `notes` is internal staff context and must never reach the donor scope.
+create table if not exists donor_sponsorships (
+  id              text primary key,
+  donor_id        text not null,
+  student_id      text not null,
+  allocated_by    text,                      -- staff display name
+  allocated_by_id text,
+  allocated_at    timestamptz default now(),
+  status          text default 'active',     -- 'active' | 'ended'
+  ended_at        timestamptz,
+  ended_by        text,
+  notes           text,
+  unique (donor_id, student_id)
+);
+create index if not exists idx_sponsorship_donor   on donor_sponsorships (donor_id);
+create index if not exists idx_sponsorship_student on donor_sponsorships (student_id);
+create index if not exists idx_sponsorship_status  on donor_sponsorships (status);
+alter table donor_sponsorships enable row level security;
+
+-- ---------- pay_runs (monthly teacher salary run) -----------------------
+-- One header row per month. `unique (period)` is the double-pay guard: it
+-- makes paying March twice a database error rather than a judgement call.
+-- expense_id is null until the run is finalised, at which point it points
+-- at the single expenses row that records the net outflow.
+create table if not exists pay_runs (
+  id               text primary key,
+  period           text not null,              -- 'YYYY-MM'
+  status           text not null default 'draft',  -- 'draft' | 'finalised'
+  total_gross      int default 0,
+  total_deductions int default 0,
+  total_net        int default 0,
+  staff_count      int default 0,
+  working_days     int default 0,              -- editable per run; LOP divisor
+  expense_id       text,
+  notes            text,
+  created_by       text,
+  created_at       timestamptz default now(),
+  finalised_at     timestamptz,
+  finalised_by     text,
+  unique (period)
+);
+create index if not exists idx_pay_runs_period on pay_runs (period desc);
+alter table pay_runs enable row level security;
+
+-- ---------- payslips ----------------------------------------------------
+-- One row per run per staff member. staff_name / staff_role / base_salary
+-- are denormalised snapshots on purpose: a payslip must still read correctly
+-- after the staff row is renamed, re-graded or archived.
+--
+-- attendance_source records HOW the attendance was obtained. 'unmatched'
+-- means staff→user email resolution failed, so lop_days is 0 and the teacher
+-- is paid full salary — underpaying from a data-join failure is far worse
+-- than overpaying, and the draft screen surfaces the count.
+create table if not exists payslips (
+  id                text primary key,
+  run_id            text not null,
+  staff_id          text not null,
+  staff_name        text,
+  staff_role        text,
+  period            text,
+  base_salary       int default 0,
+  present_days      int default 0,
+  absent_days       int default 0,
+  leave_days        int default 0,
+  working_days      int default 0,
+  lop_days          numeric default 0,
+  lop_amount        int default 0,
+  allowances        int default 0,
+  deductions        int default 0,
+  gross             int default 0,
+  net               int default 0,
+  attendance_source text default 'manual',     -- 'matched' | 'unmatched' | 'manual'
+  notes             text,
+  created_at        timestamptz default now(),
+  unique (run_id, staff_id)
+);
+create index if not exists idx_payslips_run on payslips (run_id);
+create index if not exists idx_payslips_staff on payslips (staff_id, period desc);
+alter table payslips enable row level security;

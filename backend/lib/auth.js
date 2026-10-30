@@ -26,11 +26,14 @@ if (!process.env.AUTH_SECRET) {
 
 const SECRET = new TextEncoder().encode(SECRET_RAW);
 
-// Seven canonical roles. Anything else is rejected at login time.
-// School / Trust Accountant were added in v2 alongside the finance split.
+// Canonical roles. Anything else is rejected at login time unless it resolves
+// to a real custom-role id. School / Trust Accountant were added in v2
+// alongside the finance split; `donor` in v3 for sponsor dashboards, where
+// linkedId holds a donors.id rather than a student or staff id.
 export const ROLE_KEYS = [
   "admin", "academic_director", "principal", "teacher", "parent",
   "school_accountant", "trust_accountant", "transport_manager", "fees_manager",
+  "donor",
 ];
 
 export const ROLE_LABEL = {
@@ -43,6 +46,7 @@ export const ROLE_LABEL = {
   trust_accountant: "Trust Accountant",
   transport_manager: "Transport Manager",
   fees_manager: "Fees Manager",
+  donor: "Donor",
 };
 
 export async function hashPassword(plain) {

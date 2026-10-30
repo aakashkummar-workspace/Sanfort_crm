@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { addBroadcast, logAudit } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { notifyWhatsApp } from "@/lib/whatsapp";
+import { notifyWhatsApp, flushWhatsAppLog } from "@/lib/whatsapp";
 
 // Hard cap so a runaway broadcast can't time out the route or burn through
 // the Evolution API quota in one shot. The Communication screen lets staff
@@ -39,13 +39,31 @@ export async function POST(req) {
         error: `Too many recipients (${recipients.length}). Split into batches of ${MAX_WHATSAPP_RECIPIENTS} or fewer.`,
       }, { status: 400 });
     }
-    // Fan out in parallel. notifyWhatsApp already audit-logs every attempt,
-    // so admins can inspect per-message outcomes in the Audit screen.
+    // Fan out in parallel. notifyWhatsApp logs every attempt itself, so the
+    // WhatsApp screen shows per-recipient outcomes with the body attached.
+    //
+    // `_collect` is why this isn't 500 inserts: each call pushes its log row
+    // onto this array instead of inserting, and we write them in one go below.
+    // At 500 recipients the per-row path would spend the route's entire time
+    // budget on the log rather than on sending.
+    const logRows = [];
     const results = await Promise.allSettled(
-      recipients.map((r) => notifyWhatsApp("broadcast", { phone: r.phone, message }))
+      recipients.map((r) => notifyWhatsApp("broadcast", {
+        phone: r.phone,
+        message,
+        recipientName: r.name || r.parentName || null,
+        studentId: r.studentId || r.id || null,
+        studentName: r.studentName || r.name || null,
+        actor,
+        actorId: session?.id || null,
+        _collect: logRows,
+      }))
     );
     delivered = results.filter((r) => r.status === "fulfilled" && r.value?.ok).length;
     failed = recipients.length - delivered;
+    // One write for the whole fan-out. Best-effort: a broadcast that reached
+    // parents must not be reported as failed because the log insert did.
+    try { await flushWhatsAppLog(logRows); } catch {}
   }
 
   try {

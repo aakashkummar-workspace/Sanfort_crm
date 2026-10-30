@@ -5,7 +5,11 @@ import Icon from "../Icon";
 import { KPI, LineBarChart } from "../ui";
 import { money, moneyK, formatClassLabel } from "@/lib/format";
 
-const EXPENSE_CATEGORIES = [
+// Fallback only. The canonical list lives in backend/lib/db.js and arrives
+// via the bootstrap as EXPENSE_CATEGORY_CATALOG; this copy is what the
+// dropdown falls back to if the payload predates that field. The two had
+// already drifted — "Inventory purchase" existed server-side and not here.
+const FALLBACK_EXPENSE_CATEGORIES = [
   "Salary", "Utilities", "Supplies", "Maintenance", "Transport", "Events",
   "Stationery", "Software", "Marketing", "Donation outflow", "Misc",
 ];
@@ -114,6 +118,16 @@ export default function ScreenMoney({ E, refresh, role }) {
     in: true,
   })), [E.DONOR_RECEIPTS]);
 
+  // expense id → the finalised pay run that owns it. PAY_RUNS is admin-only
+  // (dropped for every other role), so this map is simply empty elsewhere.
+  const payrollExpenseIds = useMemo(() => {
+    const m = new Map();
+    for (const r of (E.PAY_RUNS || [])) {
+      if (r.status === "finalised" && r.expenseId) m.set(r.expenseId, r);
+    }
+    return m;
+  }, [E.PAY_RUNS]);
+
   const expenseRows = useMemo(() => (E.EXPENSES || []).map((e) => ({
     id: e.id, date: e.date,
     desc: `${e.category}${e.vendor ? ` · ${e.vendor}` : ""}${e.memo ? ` · ${e.memo}` : ""}`,
@@ -124,7 +138,11 @@ export default function ScreenMoney({ E, refresh, role }) {
     in: false,
     inventoryId: e.inventoryId || null,
     isInventoryPurchase: !!e.inventoryId || e.category === "Inventory purchase",
-  })), [E.EXPENSES]);
+    // A finalised pay run stores this expense's id; deleting the row would
+    // leave the run pointing at nothing. The server refuses it too — this
+    // just stops the admin reaching for a button that can only fail.
+    payrollRun: payrollExpenseIds.get(e.id) || null,
+  })), [E.EXPENSES, payrollExpenseIds]);
 
   const TXNS = useMemo(() => [...incomeRows, ...donationRows, ...expenseRows], [incomeRows, donationRows, expenseRows]);
 
@@ -561,6 +579,11 @@ export default function ScreenMoney({ E, refresh, role }) {
                           <Icon name="inventory" size={10} />Inventory
                         </span>
                       )}
+                      {t.payrollRun && (
+                        <span className="chip accent" style={{ marginLeft: 6, fontSize: 10 }} title={`Pay run ${t.payrollRun.id} · ${t.payrollRun.staffCount} staff`}>
+                          <Icon name="money" size={10} />Payroll {t.payrollRun.period}
+                        </span>
+                      )}
                     </td>
                     <td><span className={`chip ${t.scope === "trust" ? "accent" : "info"}`}><span className="dot" />{t.scope === "trust" ? "Trust" : "School"}</span></td>
                     <td style={{ fontSize: 12, color: "var(--ink-3)" }}>{t.category}</td>
@@ -570,11 +593,14 @@ export default function ScreenMoney({ E, refresh, role }) {
                     </td>
                     {canEdit && (
                       <td style={{ textAlign: "right" }}>
-                        {!t.in && t.id?.startsWith("EXP-") && !t.isInventoryPurchase && (
+                        {!t.in && t.id?.startsWith("EXP-") && !t.isInventoryPurchase && !t.payrollRun && (
                           <button className="icon-btn" onClick={() => removeExpense(t)} title="Remove expense"><Icon name="x" size={12} /></button>
                         )}
                         {t.isInventoryPurchase && (
                           <span style={{ fontSize: 10, color: "var(--ink-4)" }} title="Remove from Inventory screen">locked</span>
+                        )}
+                        {t.payrollRun && !t.isInventoryPurchase && (
+                          <span style={{ fontSize: 10, color: "var(--ink-4)" }} title={`Finalised pay run ${t.payrollRun.id} — post an adjustment run instead`}>locked</span>
                         )}
                       </td>
                     )}
@@ -593,6 +619,7 @@ export default function ScreenMoney({ E, refresh, role }) {
           defaultScope={isTrustOnly || accountScope === "Trust only" ? "trust" : "school"}
           lockScope={isTrustOnly}
           customCategories={E.EXPENSE_CATEGORIES || []}
+          baseCategories={E.EXPENSE_CATEGORY_CATALOG || []}
           onCategoryAdded={refresh}
           prefill={expensePrefill}
         />
@@ -604,6 +631,7 @@ export default function ScreenMoney({ E, refresh, role }) {
           defaultScope={isTrustOnly || accountScope === "Trust only" ? "trust" : "school"}
           lockScope={isTrustOnly}
           customCategories={E.EXPENSE_CATEGORIES || []}
+          baseCategories={E.EXPENSE_CATEGORY_CATALOG || []}
           onClose={() => setEditingTemplate(null)}
           onSubmit={saveTemplate}
         />
@@ -676,7 +704,7 @@ function TemplateTile({ tmpl, onUse, onEdit, onDelete }) {
 
 // Create / edit a single template. Same shape as the Add Expense form but
 // stores defaults instead of recording one expense.
-function TemplateEditModal({ template, defaultScope, lockScope = false, customCategories = [], onClose, onSubmit }) {
+function TemplateEditModal({ template, defaultScope, lockScope = false, customCategories = [], baseCategories = [], onClose, onSubmit }) {
   const isEdit = !!template;
   const [busy, setBusy] = useState(false);
   const [err, setErr]   = useState("");
@@ -691,7 +719,7 @@ function TemplateEditModal({ template, defaultScope, lockScope = false, customCa
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const mergedCategories = (() => {
-    const out = [...EXPENSE_CATEGORIES];
+    const out = [...(baseCategories.length ? baseCategories : FALLBACK_EXPENSE_CATEGORIES)];
     const seen = new Set(out.map((c) => c.toLowerCase()));
     for (const c of customCategories) {
       if (c.type !== form.scope) continue;
@@ -802,7 +830,7 @@ function TemplateEditModal({ template, defaultScope, lockScope = false, customCa
   );
 }
 
-function AddExpenseModal({ onClose, onSubmit, defaultScope, lockScope = false, customCategories = [], onCategoryAdded, prefill = null }) {
+function AddExpenseModal({ onClose, onSubmit, defaultScope, lockScope = false, customCategories = [], baseCategories = [], onCategoryAdded, prefill = null }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const today = new Date().toISOString().slice(0, 10);
@@ -856,7 +884,7 @@ function AddExpenseModal({ onClose, onSubmit, defaultScope, lockScope = false, c
   // De-dupe by name so an admin can't accidentally hide a built-in by
   // adding the same name as a custom row.
   const mergedCategories = (() => {
-    const out = [...EXPENSE_CATEGORIES];
+    const out = [...(baseCategories.length ? baseCategories : FALLBACK_EXPENSE_CATEGORIES)];
     const seen = new Set(out.map((c) => c.toLowerCase()));
     for (const c of customCategories) {
       if (c.type !== form.scope) continue;

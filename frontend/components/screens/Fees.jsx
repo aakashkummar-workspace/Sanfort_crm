@@ -5,12 +5,16 @@ import Icon from "../Icon";
 import { AvatarChip, FakeQR, StatusChip, UpiQR, buildUpiUri } from "../ui";
 import { money, moneyK, FEE_TYPES, feeTypeLabel, formatClassLabel } from "@/lib/format";
 import { resolveSchool, downloadPdf } from "@/lib/export";
+import {
+  transportPerMonth, DEFAULT_SCHEDULE_MONTHS, DEFAULT_YEAR_START_MONTH,
+} from "@/backend/lib/fee-schedule.js";
 
 const DEMO_PARENT_PHONE = "+919876543210";
-// Transport is stored as one annual balance per student; pending reports also
-// show it per month by dividing across this many billable months.
-const TRANSPORT_MONTHS = 11;
-const transportPerMonth = (amt) => Math.round((Number(amt) || 0) / TRANSPORT_MONTHS);
+// Transport is stored as one annual balance per student; the pending statement
+// and class-wise printout also show it per month. The divisor now comes from
+// the shared fee-schedule module so the printouts and the Monthly view can
+// never disagree about how many months the year has.
+const TRANSPORT_MONTHS = DEFAULT_SCHEDULE_MONTHS;
 
 // Customized bulk-reminder presets. `combo` = students who have BOTH fee types
 // pending (reminds both lines); `type` = a single fee type pending. `group`
@@ -71,6 +75,9 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
     const r = childId ? (E.RECENT_FEES  || []).filter((f) => (f.studentId || f.id) === childId) : (E.RECENT_FEES  || []);
     return p[0] || r[0];
   });
+  // "register" = the existing collect/receipt workflow. "monthly" = the
+  // read-only month-by-month derived view (no payment actions at all).
+  const [mainView, setMainView] = useState("register");
   const [stage, setStage] = useState("pick");
   const [method, setMethod] = useState("UPI");
   const [busy, setBusy] = useState(false);
@@ -983,6 +990,10 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
             <span className="chip warn"><span className="dot" />{money(totals.pending)} pending</span>
             <span className="chip bad"><span className="dot" />{money(totals.overdue)} overdue</span>
           </div>
+          <div className="segmented" style={{ marginTop: 12 }}>
+            <button className={mainView === "register" ? "active" : ""} onClick={() => setMainView("register")}>Register</button>
+            <button className={mainView === "monthly" ? "active" : ""} onClick={() => setMainView("monthly")}>Monthly</button>
+          </div>
         </div>
         <div className="page-actions">
           {isParent ? (
@@ -1084,6 +1095,14 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
         </div>
       </div>
 
+      {mainView === "monthly" ? (
+        <MonthlySchedule
+          students={E.ADDED_STUDENTS || []}
+          isParent={isParent}
+          initialStudentId={isParent ? (E.ADDED_STUDENTS?.[0]?.id || null) : (selected?.studentId || selected?.id || null)}
+        />
+      ) : (
+      <>
       {!isParent && <CollectionSummary recent={scopedRecent} />}
 
       <div className="grid g-12">
@@ -1610,6 +1629,8 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
         </>
         )}
       </div>
+      </>
+      )}
 
       {addFeeOpen && !isParent && (
         <AddFeeItemModal
@@ -2921,6 +2942,240 @@ function RemindMenu({ rows, onPick, onClose }) {
             </span>
           </button>
         )
+      )}
+    </div>
+  );
+}
+
+// ---------- Monthly fee schedule (READ-ONLY, DERIVED) -------------------
+// Fees are billed by term plus one annual transport balance, and receipts
+// carry no month tag. This view reconstructs a month-by-month statement from
+// those totals. It intentionally has NO payment action: a "pay this month"
+// button would succeed (partial payments are supported) but the system cannot
+// store which month the money was for, so the attribution it implied would be
+// fiction. Collection stays on the Register tab, where it is honest.
+function MonthlySchedule({ students = [], isParent = false, initialStudentId = null }) {
+  const [studentId, setStudentId] = useState(initialStudentId || students[0]?.id || "");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [q, setQ] = useState("");
+
+  useEffect(() => {
+    if (!studentId) { setData(null); return; }
+    let cancelled = false;
+    setLoading(true); setErr(null);
+    (async () => {
+      try {
+        const r = await fetch(`/api/fees/schedule?studentId=${encodeURIComponent(studentId)}`, { cache: "no-store" });
+        const json = await r.json();
+        if (cancelled) return;
+        if (json.ok) setData(json);
+        else setErr(json.error || "Could not load the schedule");
+      } catch (e) {
+        if (!cancelled) setErr(e.message || "Network error");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [studentId]);
+
+  const picker = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const list = students.filter((s) => !s.archivedAt);
+    if (!term) return list.slice(0, 200);
+    return list.filter((s) =>
+      String(s.name || "").toLowerCase().includes(term) || String(s.id || "").toLowerCase().includes(term)
+    ).slice(0, 200);
+  }, [students, q]);
+
+  const sch = data?.schedule || null;
+  const statusChip = (st) => {
+    if (st === "paid") return <span className="chip ok" style={{ fontSize: 11 }}>Paid</span>;
+    if (st === "part") return <span className="chip warn" style={{ fontSize: 11 }}>Part</span>;
+    if (st === "due")  return <span className="chip bad" style={{ fontSize: 11 }}>Due</span>;
+    return <span style={{ color: "var(--ink-4)" }}>—</span>;
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <div className="card-title">Monthly fee schedule</div>
+          <div className="card-sub">Derived from term + transport totals — not a separate ledger.</div>
+        </div>
+        <div className="card-actions">
+          {!isParent && (
+            <input
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search student…"
+              className="select"
+              style={{ height: 30, fontSize: 12, padding: "0 8px", width: 170 }}
+            />
+          )}
+          <select
+            className="select"
+            value={studentId}
+            onChange={(e) => setStudentId(e.target.value)}
+            disabled={isParent}
+            style={{ height: 30, fontSize: 12, padding: "0 8px", maxWidth: 260 }}
+          >
+            <option value="">Select a student…</option>
+            {picker.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} · {s.cls ? formatClassLabel(s.cls) : "—"} · {s.id}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* The one line this view cannot ship without. Receipts carry no month
+          tag, so the per-month Paid column is a derivation, not a record. */}
+      <div style={{
+        margin: "0 18px 12px", padding: "9px 12px", borderRadius: 8,
+        background: "var(--bg-2)", border: "1px solid var(--rule)",
+        fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.55,
+      }}>
+        <Icon name="audit" size={11} />{" "}
+        <strong style={{ color: "var(--ink-2)" }}>How this is calculated.</strong>{" "}
+        Receipts do not record which month they paid for, so payments are allocated to the
+        <strong> earliest unpaid month first</strong>. Month-level Paid / Due figures are
+        <strong> derived for display</strong> and are not a ledger fact — the receipts on the
+        Register tab are the record. Term fees are shown in the month the term starts,
+        not divided into monthly tuition, because the school bills by term.
+      </div>
+
+      {!studentId ? (
+        <div className="empty" style={{ padding: 20 }}>Pick a student to see their month-by-month fees.</div>
+      ) : loading ? (
+        <div className="empty" style={{ padding: 20 }}>Loading…</div>
+      ) : err ? (
+        <div className="empty" style={{ padding: 20, color: "var(--err, #b13c1c)" }}>{err}</div>
+      ) : !sch ? (
+        <div className="empty" style={{ padding: 20 }}>No data.</div>
+      ) : sch.isEmpty ? (
+        <div className="empty" style={{ padding: 20 }}>
+          No fees recorded for {data?.student?.name || "this student"} yet. Nothing to schedule.
+        </div>
+      ) : (
+        <>
+          <div style={{ padding: "0 18px 10px", display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12 }}>
+            <span className="chip"><span className="dot" />{money(sch.totals.due)} billed for the year</span>
+            <span className="chip ok"><span className="dot" />{money(sch.totals.paid)} paid</span>
+            <span className="chip warn"><span className="dot" />{money(sch.totals.outstanding)} outstanding</span>
+          </div>
+
+          {/* Notes the data itself raises — e.g. a legacy annual total that
+              sits entirely in Term I, which looks like a bug but is not. */}
+          {(sch.notes || []).map((n, i) => (
+            <div key={i} style={{
+              margin: "0 18px 10px", padding: "8px 12px", borderRadius: 8,
+              background: "var(--accent-soft)", border: "1px solid var(--rule-2)",
+              fontSize: 11.5, color: "var(--accent-2)", lineHeight: 1.5,
+            }}>
+              <Icon name="flag" size={11} /> {n}
+            </div>
+          ))}
+
+          <div style={{ overflowX: "auto" }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Month</th>
+                  <th>Term</th>
+                  <th style={{ textAlign: "right" }}>Term fee</th>
+                  <th style={{ textAlign: "right" }}>Van / transport</th>
+                  <th style={{ textAlign: "right" }}>Total due</th>
+                  <th style={{ textAlign: "right" }}>Paid</th>
+                  <th style={{ textAlign: "center" }}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sch.months.map((mo) => (
+                  <tr key={mo.index}>
+                    <td style={{ fontWeight: 500 }}>{mo.label}</td>
+                    <td style={{ color: "var(--ink-3)", fontSize: 12 }}>{mo.termLabel || "—"}</td>
+                    <td style={{ textAlign: "right" }}>{mo.term ? money(mo.term) : "—"}</td>
+                    <td style={{ textAlign: "right" }}>{mo.transport ? money(mo.transport) : "—"}</td>
+                    <td style={{ textAlign: "right", fontWeight: 600 }}>{mo.due ? money(mo.due) : "—"}</td>
+                    <td style={{ textAlign: "right" }}>{mo.paid ? money(mo.paid) : "—"}</td>
+                    <td style={{ textAlign: "center" }}>{statusChip(mo.status)}</td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 700, background: "var(--bg-2)" }}>
+                  <td colSpan={4}>Year total (months)</td>
+                  <td style={{ textAlign: "right" }}>{money(sch.totals.monthlyDue)}</td>
+                  <td style={{ textAlign: "right" }}>{money(sch.totals.monthlyPaid)}</td>
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* One-offs are listed separately and dated to admission rather than
+              spread, so an admission or kit charge is not shown as recurring. */}
+          {sch.oneTime.length > 0 && (
+            <>
+              <div style={{ padding: "14px 18px 6px", fontSize: 12, fontWeight: 600, color: "var(--ink-2)" }}>
+                One-time charges
+                <span style={{ fontWeight: 400, color: "var(--ink-4)", marginLeft: 6 }}>
+                  · charged once at admission, not spread across months
+                </span>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Charge</th>
+                      <th>Month</th>
+                      <th style={{ textAlign: "right" }}>Due</th>
+                      <th style={{ textAlign: "right" }}>Paid</th>
+                      <th style={{ textAlign: "center" }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sch.oneTime.map((o) => (
+                      <tr key={o.feeType}>
+                        <td style={{ fontWeight: 500 }}>{feeTypeLabel(o.feeType)}</td>
+                        <td style={{ color: "var(--ink-3)", fontSize: 12 }}>{o.monthLabel || "—"}</td>
+                        <td style={{ textAlign: "right", fontWeight: 600 }}>{money(o.due)}</td>
+                        <td style={{ textAlign: "right" }}>{o.paid ? money(o.paid) : "—"}</td>
+                        <td style={{ textAlign: "center" }}>{statusChip(o.status)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          <div style={{ padding: "12px 18px 16px", fontSize: 11, color: "var(--ink-4)", lineHeight: 1.6 }}>
+            Transport is billed as one annual balance and shown here spread over {sch.monthsCount} months
+            (any rounding remainder falls on the last month, so the column adds up to the exact annual figure).
+            {sch.undatedReceiptCount > 0 && (
+              <>
+                {" "}
+                <strong style={{ color: "var(--ink-3)" }}>
+                  {sch.undatedReceiptCount} receipt{sch.undatedReceiptCount === 1 ? "" : "s"} has no recorded payment date
+                </strong>{" "}
+                and {sch.undatedReceiptCount === 1 ? "was" : "were"} allocated to the earliest unpaid month.
+              </>
+            )}
+            {Object.keys(sch.unallocated || {}).length > 0 && (
+              <>
+                {" "}
+                <strong style={{ color: "var(--err, #b13c1c)" }}>
+                  Receipts exceed the billed total for: {Object.keys(sch.unallocated).map(feeTypeLabel).join(", ")}.
+                </strong>{" "}
+                This usually means a fee amount was edited down after money was collected — worth checking on the Register tab.
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

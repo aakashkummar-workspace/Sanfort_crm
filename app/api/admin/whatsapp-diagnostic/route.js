@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { notifyWhatsApp, whatsappEnvStatus } from "@/lib/whatsapp";
-import { logAudit } from "@/lib/db";
+import { logAudit, whatsAppCounts } from "@/lib/db";
+import { getProvider } from "@/lib/providers/index.js";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,14 @@ export async function GET() {
   const session = await getSession();
   const deny = denyNonAdmin(session);
   if (deny) return deny;
-  return NextResponse.json({ ok: true, env: whatsappEnvStatus() });
+  // Which adapter is live, plus the last-24h outcome counts. "Env vars are
+  // present" was never the question an admin actually had — "is anything
+  // getting through right now?" is, and that only the log can answer.
+  let provider = null;
+  try { provider = getProvider().id; } catch { provider = null; }
+  let counts = {};
+  try { counts = await whatsAppCounts(); } catch {}
+  return NextResponse.json({ ok: true, env: whatsappEnvStatus(), provider, counts });
 }
 
 export async function POST(req) {
@@ -37,7 +45,12 @@ export async function POST(req) {
     body?.message?.trim() ||
     `Test message from Sanfort International School CRM at ${new Date().toLocaleString("en-IN")}.`;
 
-  const result = await notifyWhatsApp("test", { phone, message });
+  // actor/actorId are log-only — they put a name against the test row so the
+  // WhatsApp screen doesn't show an anonymous "test" among real sends.
+  const result = await notifyWhatsApp("test", {
+    phone, message,
+    actor: session.name || "Admin", actorId: session.id || null,
+  });
   try {
     await logAudit(
       session.name || "Admin",

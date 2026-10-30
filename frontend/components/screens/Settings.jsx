@@ -41,6 +41,13 @@ const SECTIONS = [
     fields: [
       { k: "academicYear", label: "Academic year" },
       { k: "feeCycle",     label: "Fee cycle" },
+      // These two drive the Fees · Monthly schedule view. They live in the
+      // "fees" section (alongside fees.structure) rather than "finance", so
+      // the server reads them from one place — hence the explicit `section`.
+      { k: "scheduleMonths",  section: "fees", label: "Monthly schedule · billable months",
+        hint: "How many months transport is spread over in the Monthly view. Default 11" },
+      { k: "yearStartMonth",  section: "fees", label: "Monthly schedule · year starts (month no.)",
+        hint: "1 = January … 4 = April. Default 4" },
       // UPI ID + payee name drive the QR shown on the Fees · Collect screen
       // and the Pay-online checkout. Set both for the QR to be scannable.
       { k: "upi",          label: "UPI ID",          hint: "e.g. sanfort@hdfc — used for the fees QR scanner" },
@@ -359,7 +366,10 @@ export default function ScreenSettings({ role, E, refresh }) {
             </div>
             <div>
               {s.fields.map((it) => {
-                const value = draft?.[s.key]?.[it.k] ?? "";
+                // A field may store into a different settings section than the
+                // card it is displayed under (see fees.scheduleMonths).
+                const sect = it.section || s.key;
+                const value = draft?.[sect]?.[it.k] ?? "";
                 return (
                   <div className="lrow" key={it.k}>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -368,7 +378,7 @@ export default function ScreenSettings({ role, E, refresh }) {
                         <input
                           type="text"
                           value={value}
-                          onChange={(e) => setField(s.key, it.k, e.target.value)}
+                          onChange={(e) => setField(sect, it.k, e.target.value)}
                           placeholder={it.placeholder || "—"}
                           style={inputStyle}
                         />

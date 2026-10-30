@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 export const dynamic = "force-dynamic";
 
 const CAN_OVERRIDE = new Set(["admin", "principal"]);
+const SOURCES = new Set(["self", "admin", "exams-strip"]);
 
 // GET /api/teacher-attendance?teacherId=&fromDate=&toDate=
 export async function GET(req) {
@@ -22,7 +23,7 @@ export async function GET(req) {
   return NextResponse.json({ ok: true, records });
 }
 
-// POST /api/teacher-attendance { teacherId?, date, status, leaveReason? }
+// POST /api/teacher-attendance { teacherId?, date, status, leaveReason?, source? }
 // Teachers can mark themselves; principal/admin can mark or override anyone.
 export async function POST(req) {
   const session = await getSession();
@@ -34,6 +35,11 @@ export async function POST(req) {
   if (isOverride && !CAN_OVERRIDE.has(session.role)) {
     return NextResponse.json({ ok: false, error: "Only admin / principal can mark for others" }, { status: 403 });
   }
+
+  // Which screen the mark came from. A client that sends nothing, or something
+  // we don't recognise, is attributed by shape instead of being rejected —
+  // older builds are still in the field and their marks must not fail.
+  const source = SOURCES.has(body.source) ? body.source : (isOverride ? "admin" : "self");
 
   // Resolve teacher info — defaults to the signed-in teacher.
   let teacherId = body.teacherId || session.sub || session.id;
@@ -53,8 +59,20 @@ export async function POST(req) {
       leaveReason: body.leaveReason,
       lateReason:  body.lateReason,
       markedBy: session.name || session.email,
+      markedById: session.sub || session.id || null,
+      markedFrom: source,
     });
-    try { await logAudit(session.name || "User", "Teacher attendance", `${row.teacherName} · ${row.date} · ${row.status}`); } catch {}
+    try {
+      const changed = row.previousStatus && row.previousStatus !== row.status
+        ? ` (was ${row.previousStatus})` : "";
+      await logAudit(session.name || "User", "Teacher attendance", `${row.teacherName} · ${row.date} · ${row.status}${changed} · via ${source}`, {
+        actorId: session?.sub,
+        actorRole: session?.role,
+        entityType: "teacher_attendance",
+        entityId: `${teacherId}:${body.date}`,
+        meta: { status: row.status, previousStatus: row.previousStatus ?? null, source },
+      });
+    } catch {}
     return NextResponse.json({ ok: true, record: row });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e.message || "Failed" }, { status: 500 });

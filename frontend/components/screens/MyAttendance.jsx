@@ -66,6 +66,7 @@ export default function ScreenMyAttendance({ E, refresh, role, session }) {
         body: JSON.stringify({
           date: today,
           status,
+          source: "self",
           leaveReason: status === "leave" ? leaveReason.trim() : null,
           lateReason:  status === "late"  ? lateReason.trim()  : null,
         }),

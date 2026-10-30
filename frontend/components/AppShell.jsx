@@ -23,6 +23,7 @@ import ScreenFees from "./screens/Fees";
 import ScreenStudents from "./screens/Students";
 import ScreenAcademic from "./screens/Academic";
 import ScreenStaff from "./screens/Staff";
+import ScreenPayroll from "./screens/Payroll";
 import ScreenTransport from "./screens/Transport";
 import ScreenInventory from "./screens/Inventory";
 import ScreenCommunication from "./screens/Communication";
@@ -31,6 +32,7 @@ import ScreenComplaints from "./screens/Complaints";
 import ScreenDonors from "./screens/Donors";
 import ScreenUsers from "./screens/Users";
 import ScreenAudit from "./screens/Audit";
+import ScreenWhatsApp from "./screens/WhatsApp";
 import ScreenSettings from "./screens/Settings";
 import ScreenClasses from "./screens/Classes";
 import ScreenAttendance from "./screens/Attendance";
@@ -51,9 +53,11 @@ import ScreenLeave from "./screens/Leave";
 import ScreenRemarksRewards from "./screens/RemarksRewards";
 import ScreenGovernmentDocuments from "./screens/GovernmentDocuments";
 import ScreenStudentActivities from "./screens/StudentActivities";
+import ScreenPrograms from "./screens/Programs";
 import ScreenCustomRoles from "./screens/CustomRoles";
 import ScreenMessages from "./screens/Messages";
 import ScreenClassProgress from "./screens/ClassProgress";
+import ScreenDonorDashboard from "./screens/DonorDashboard";
 import ScreenScale from "./screens/Scale";
 import ScreenScaleReport from "./screens/ScaleReport";
 import ScreenScaleAdmin from "./screens/ScaleAdmin";
@@ -69,6 +73,7 @@ const SCREENS = {
   students: ScreenStudents,
   academic: ScreenAcademic,
   staff: ScreenStaff,
+  payroll: ScreenPayroll,
   transport: ScreenTransport,
   inventory: ScreenInventory,
   communication: ScreenCommunication,
@@ -77,6 +82,8 @@ const SCREENS = {
   donors: ScreenDonors,
   users: ScreenUsers,
   audit: ScreenAudit,
+  // No E.* mapping: the log is not in /api/data, the screen fetches its own.
+  whatsapp: ScreenWhatsApp,
   settings: ScreenSettings,
   classes: ScreenClasses,
   attendance: ScreenAttendance,
@@ -97,9 +104,11 @@ const SCREENS = {
   remarks_rewards: ScreenRemarksRewards,
   government_documents: ScreenGovernmentDocuments,
   student_activities: ScreenStudentActivities,
+  programs: ScreenPrograms,
   custom_roles: ScreenCustomRoles,
   messages: ScreenMessages,
   class_progress: ScreenClassProgress,
+  donor_dashboard: ScreenDonorDashboard,
   scale: ScreenScale,
   scale_report: ScreenScaleReport,
   scale_admin: ScreenScaleAdmin,
@@ -117,6 +126,7 @@ const DEFAULT_SCREEN_BY_ROLE = {
   trust_accountant: "trust",
   transport_manager: "transport",
   fees_manager: "fees",
+  donor: "donor_dashboard",
 };
 
 const ROLE_LABEL = {
@@ -127,6 +137,10 @@ const ROLE_LABEL = {
   parent: "Parent",
   school_accountant: "School Accountant",
   trust_accountant: "Trust Accountant",
+  // These three were missing, so their badge fell back to the raw role key.
+  transport_manager: "Transport Manager",
+  fees_manager: "Fees Manager",
+  donor: "Donor",
 };
 
 const DEFAULT_SETTINGS = {
@@ -367,12 +381,15 @@ export default function AppShell({ initialData, session }) {
         ARCHIVED_STUDENTS: json.archivedStudents || [],
         DAILY_LOGS: json.dailyLogs || [],
         EXPENSE_CATEGORIES:    json.expenseCategories || [],
+        EXPENSE_CATEGORY_CATALOG: json.expenseCategoryCatalog || [],
         EXPENSE_TEMPLATES:     json.expenseTemplates  || [],
         DONOR_FORM_SUBMISSIONS: json.donorFormSubmissions || [],
         LEAVE_REQUESTS:        json.leaveRequests || [],
         REMARKS_REWARDS:       json.remarksRewards || [],
         GOVERNMENT_DOCUMENTS:  json.governmentDocuments || [],
         STUDENT_ACTIVITIES:    json.studentActivities || [],
+        PAY_RUNS:              json.payRuns || [],
+        PROGRAMS:              json.programs || [],
         CUSTOM_ROLES:          json.customRoles || [],
         SCALE_SESSIONS:        json.scaleSessions || [],
         SCALE_ENTRIES:         json.scaleEntries || [],
@@ -403,6 +420,19 @@ export default function AppShell({ initialData, session }) {
 
   // Per-role data scoping. Defence-in-depth: API/RLS should enforce too.
   const scopedData = (() => {
+    // Payroll is admin-only, so it's dropped once here rather than in each
+    // role branch below — a payslip discloses what every colleague earns, and
+    // the branches that return early are exactly where a new list gets
+    // forgotten. /api/data is the real boundary; this is the second layer.
+    if (role !== "admin" && (data.PAY_RUNS || []).length) {
+      return scopeNonAdmin({ ...data, PAY_RUNS: [] });
+    }
+    return scopeNonAdmin(data);
+  })();
+
+  // The per-role slices. Split out of the IIFE above so the payroll guard can
+  // rewrite the payload once and still run every branch against it.
+  function scopeNonAdmin(data) {
     if (role === "parent") {
       // Parent sees ONLY their child. Demo picks the first active student
       // when no linked_id is set; production should always have a linked_id.
@@ -554,6 +584,7 @@ export default function AppShell({ initialData, session }) {
         GOVERNMENT_DOCUMENTS: [],
         CUSTOM_ROLES: [], USERS: [],
         STUDENT_ACTIVITIES: [],
+        PROGRAMS: [],
         LEAVE_REQUESTS: [],
         REMARKS_REWARDS: [],
         SCALE_SESSIONS: [], SCALE_ENTRIES: [],
@@ -578,7 +609,7 @@ export default function AppShell({ initialData, session }) {
         GOVERNMENT_DOCUMENTS: [], MEETINGS: [], VOLUNTEERS: [], TASKS: [],
         SCALE_SESSIONS: [], SCALE_ENTRIES: [], SCALE_SUPPORT_PLANS: [], SCALE_DAILY_RITUALS: [],
         STUDENT_ACTIVITIES: [], LEAVE_REQUESTS: [], REMARKS_REWARDS: [],
-        TC_REQUESTS: [], CUSTOM_ROLES: [], USERS: [],
+        TC_REQUESTS: [], CUSTOM_ROLES: [], USERS: [], PROGRAMS: [],
       };
     }
     if (role === "fees_manager") {
@@ -597,11 +628,11 @@ export default function AppShell({ initialData, session }) {
         ROUTES: [], ROUTE_TEMPLATES: [], TRANSPORT_ATTENDANCE: [], MAINTENANCE_LOGS: [],
         GOVERNMENT_DOCUMENTS: [], MEETINGS: [], VOLUNTEERS: [], TASKS: [],
         LEAVE_REQUESTS: [], REMARKS_REWARDS: [], STUDENT_ACTIVITIES: [], TC_REQUESTS: [],
-        CUSTOM_ROLES: [],
+        CUSTOM_ROLES: [], PROGRAMS: [],
       };
     }
     return data;
-  })();
+  }
   // Inject the role→feature→{view,edit,delete} access map so every screen
   // can gate Add / Edit / Delete buttons via E.ACCESS without each one
   // having to fetch /api/permissions itself.

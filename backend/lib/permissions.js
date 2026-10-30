@@ -26,6 +26,7 @@ export const ALL_FEATURES = [
   { id: "schools",       label: "Schools",                    group: "Overview" },
   { id: "money",         label: "Money / Finance",            group: "Money" },
   { id: "fees",          label: "Fees & UPI",                 group: "Money" },
+  { id: "payroll",       label: "Teacher salary / payroll",    group: "Money" },
   { id: "students",      label: "Students / My students",     group: "People" },
   { id: "classes",       label: "Classes",                    group: "People" },
   { id: "attendance",    label: "Attendance",                 group: "People" },
@@ -36,6 +37,7 @@ export const ALL_FEATURES = [
   { id: "library",       label: "Library",                    group: "Operations" },
   { id: "timetable",     label: "Timetable",                  group: "People" },
   { id: "communication", label: "Communication / Broadcasts", group: "Operations" },
+  { id: "whatsapp",      label: "WhatsApp messages",          group: "Operations" },
   { id: "enquiries",     label: "Admissions",                 group: "CRM" },
   { id: "complaints",    label: "Complaints / Raise ticket",  group: "CRM" },
   { id: "donors",        label: "Donors",                     group: "CRM" },
@@ -56,6 +58,8 @@ export const ALL_FEATURES = [
   { id: "leave",                label: "Leave requests",            group: "Workflow" },
   { id: "remarks_rewards",      label: "Remarks & rewards",         group: "Workflow" },
   { id: "student_activities",   label: "Student activities",        group: "Workflow" },
+  { id: "programs",             label: "School programs",           group: "Operations" },
+  { id: "donor_dashboard",      label: "Donor dashboard",           group: "Account" },
   { id: "messages",             label: "Parent ↔ Admin messages",   group: "Workflow" },
   { id: "government_documents", label: "Government documents",      group: "Governance" },
   { id: "custom_roles",         label: "Custom roles",              group: "Governance" },
@@ -63,9 +67,13 @@ export const ALL_FEATURES = [
 ];
 
 // Seven canonical roles. School / Trust Accountant added in v2.
+// Must stay in step with ROLE_KEYS in backend/lib/auth.js. transport_manager
+// and fees_manager were missing here, so readPermissions() never emitted a map
+// for them and their nav fell back to defaults regardless of Access Control.
 export const ROLES = [
   "admin", "academic_director", "principal", "teacher", "parent",
-  "school_accountant", "trust_accountant",
+  "school_accountant", "trust_accountant", "transport_manager", "fees_manager",
+  "donor",
 ];
 
 // "Permanent" features — admin can never lock themselves out of these.

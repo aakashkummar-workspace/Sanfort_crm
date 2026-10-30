@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "../Icon";
 import { KPI, AvatarChip } from "../ui";
 import { formatClassLabel, getWorkingDays, getHolidayDates, attendanceFromLogs } from "@/backend/lib/format.js";
@@ -551,6 +551,7 @@ function TeacherAttendancePanel({ E, today, todayLabel, refresh, showToast }) {
   const [drafts, setDrafts] = useState({}); // teacherId -> "present"|"absent"|"leave"
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [logVersion, setLogVersion] = useState(0); // bumped after a save so the provenance card re-pulls
 
   // Pull list of teachers + today's attendance once.
   useEffect(() => {
@@ -611,7 +612,7 @@ function TeacherAttendancePanel({ E, today, todayLabel, refresh, showToast }) {
         const r = await fetch("/api/teacher-attendance", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ teacherId: e.teacherId, date: today, status: e.status }),
+          body: JSON.stringify({ teacherId: e.teacherId, date: today, status: e.status, source: "admin" }),
         });
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error(j.error || "Failed");
@@ -620,6 +621,7 @@ function TeacherAttendancePanel({ E, today, todayLabel, refresh, showToast }) {
       // Re-pull so `dirty` becomes false again.
       const ta = await fetch(`/api/teacher-attendance?fromDate=${today}&toDate=${today}`, { cache: "no-store" }).then((r) => r.json());
       if (ta.ok) setTodays(ta.records || []);
+      setLogVersion((v) => v + 1);
       await refresh?.();
     } catch (e) { showToast(e.message, "err"); }
     finally { setBusy(false); }
@@ -683,6 +685,146 @@ function TeacherAttendancePanel({ E, today, todayLabel, refresh, showToast }) {
           </table>
         </div>
       </div>
+
+      <TeacherMarkProvenance version={logVersion} showToast={showToast} />
+    </div>
+  );
+}
+
+const SOURCE_LABELS = {
+  self: "Self · My Attendance",
+  admin: "Admin · Attendance screen",
+  "exams-strip": "Self · Exams quick strip",
+};
+
+const STATUS_TONE = { present: "ok", late: "warn", absent: "bad", leave: "info" };
+
+const fmtWhen = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+};
+
+// Where each staff mark came from, read from teacher_attendance_log. The log is
+// append-only, so more than one entry for a (teacher, date) means the mark was
+// corrected — the newest row is the mark that stands and the rest are history.
+// Admin/principal only; the route refuses anyone else.
+function TeacherMarkProvenance({ version, showToast }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [denied, setDenied] = useState(false);
+  const [openKey, setOpenKey] = useState(null);
+
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const r = await fetch(`/api/teacher-attendance/log?limit=300`, { cache: "no-store" });
+        const j = await r.json();
+        if (cancel) return;
+        if (r.status === 403) { setDenied(true); setRows([]); }
+        else setRows(j.ok ? (j.rows || []) : []);
+      } catch {}
+      finally { if (!cancel) setLoading(false); }
+    })();
+    return () => { cancel = true; };
+  }, [version]);
+
+  // Group by (teacher, date) so a corrected mark collapses into one line with
+  // its own history rather than repeating in the list.
+  const groups = useMemo(() => {
+    const byKey = new Map();
+    for (const r of rows) {
+      const key = `${r.teacherId}|${r.date}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(r);
+    }
+    for (const list of byKey.values()) {
+      list.sort((a, b) => String(b.markedAt || "").localeCompare(String(a.markedAt || "")));
+    }
+    return [...byKey.entries()]
+      .map(([key, list]) => ({ key, latest: list[0], history: list }))
+      .sort((a, b) => String(b.latest.markedAt || "").localeCompare(String(a.latest.markedAt || "")));
+  }, [rows]);
+
+  if (loading) return <div className="card empty" style={{ marginTop: 14 }}>Loading mark history…</div>;
+  if (denied)  return null;
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-head">
+        <div>
+          <div className="card-title">Where marks came from</div>
+          <div className="card-sub">
+            Who marked it, from which screen, and when · click a changed mark for its history
+          </div>
+        </div>
+      </div>
+      {groups.length === 0 ? (
+        <div className="empty">
+          No mark history yet — it starts filling from the next time attendance is marked.
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Staff</th><th>For date</th><th>Status</th>
+                <th>Marked by</th><th>From</th><th>Marked at</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((g) => {
+                const changed = g.history.length > 1;
+                const open = openKey === g.key;
+                return (
+                  <Fragment key={g.key}>
+                    <tr
+                      onClick={() => changed && setOpenKey(open ? null : g.key)}
+                      style={{ cursor: changed ? "pointer" : "default" }}
+                    >
+                      <td style={{ fontSize: 12.5 }}>{g.latest.teacherName || "—"}</td>
+                      <td style={{ fontSize: 11.5, fontFamily: "var(--font-mono)" }}>{g.latest.date}</td>
+                      <td>
+                        <span className={`chip ${STATUS_TONE[g.latest.status] || ""}`}>
+                          {g.latest.status || "—"}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{g.latest.markedBy || "—"}</td>
+                      <td style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                        {SOURCE_LABELS[g.latest.markedFrom] || g.latest.markedFrom || "—"}
+                      </td>
+                      <td style={{ fontSize: 11.5, color: "var(--ink-3)" }}>{fmtWhen(g.latest.markedAt)}</td>
+                      <td style={{ textAlign: "right" }}>
+                        {changed && (
+                          <span className="chip warn">changed {g.history.length - 1}×</span>
+                        )}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={7} style={{ background: "var(--bg-2)", padding: "8px 12px" }}>
+                          {g.history.map((h) => (
+                            <div key={h.id} style={{ fontSize: 11.5, color: "var(--ink-3)", padding: "3px 0" }}>
+                              <b style={{ color: "var(--ink-1)" }}>{h.status || "—"}</b>
+                              {h.previousStatus ? ` (was ${h.previousStatus})` : " (first mark)"}
+                              {" · "}{h.markedBy || "—"}
+                              {" · "}{SOURCE_LABELS[h.markedFrom] || h.markedFrom || "—"}
+                              {" · "}{fmtWhen(h.markedAt)}
+                              {h.leaveReason ? ` · "${h.leaveReason}"` : ""}
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listWhatsAppMessages } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { checkServiceStatus } from "@/lib/service-status";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,11 @@ export async function GET(req) {
       status: p("status"), event: p("event"),
       from: p("from"), to: p("to"), q: p("q"),
     });
-    return NextResponse.json({ ok: true, ...result });
+    // Billing state from SirahOS. A locked service sends nothing however
+    // healthy the counts look, so the log has to say so.
+    let service = { allowed: true };
+    try { service = await checkServiceStatus(); } catch { /* never block the log */ }
+    return NextResponse.json({ ok: true, ...result, service });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e.message || "Failed to read the WhatsApp log" }, { status: 500 });
   }

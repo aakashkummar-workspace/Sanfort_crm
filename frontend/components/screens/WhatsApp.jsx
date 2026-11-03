@@ -73,6 +73,8 @@ export default function ScreenWhatsApp({ E, session }) {
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [counts, setCounts] = useState({});
+  // Billing state from SirahOS: locked means nothing is being sent at all.
+  const [service, setService] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [expanded, setExpanded] = useState(() => new Set());
@@ -133,6 +135,7 @@ export default function ScreenWhatsApp({ E, session }) {
       setTotal(j.total || 0);
       setHasMore(!!j.hasMore);
       if (j.counts) setCounts(j.counts);
+      setService(j.service || null);
     } catch (e) {
       if (mine === reqId.current) { setErr(e.message || String(e)); setMessages([]); }
     } finally {
@@ -268,6 +271,39 @@ export default function ScreenWhatsApp({ E, session }) {
           </button>
         </div>
       </div>
+
+      {service && !service.allowed && (
+        <div className="card" style={{ borderColor: "#dc2626", background: "#fef2f2", marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: 16 }}>
+            <Icon name="warning" size={18} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, color: "#b91c1c" }}>WhatsApp messaging is paused</div>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>
+                {service.message || "The WhatsApp service is not paid up. Settle the outstanding amount to resume sending."}
+              </div>
+              {!!(service.payable || []).length && (
+                <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13, color: "#6b7280" }}>
+                  {service.payable.map((i) => (
+                    <li key={i.number}>
+                      {i.number} &mdash; <strong style={{ color: "#111827" }}>
+                        &#8377;{Number(i.balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </strong>
+                      {i.dueDate ? " \u00b7 due " + new Date(i.dueDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : ""}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {service.contact && service.contact.name && (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>
+                  Contact {service.contact.name}
+                  {service.contact.phone ? " \u00b7 " + service.contact.phone : ""}
+                  {service.contact.email ? " \u00b7 " + service.contact.email : ""}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid g-4" style={{ marginBottom: 18 }}>
         <KPI label="Messages · total" value={counts.total ?? total} sub="all-time" puck="mint" puckIcon="send" />

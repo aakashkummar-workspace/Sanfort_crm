@@ -136,7 +136,26 @@ async function recordMessage(row, collect) {
 // Recognised extra payload keys (all optional, all for the log):
 //   actor, actorId, broadcastId, retryOf, attempt, recipientName,
 //   _collect  — an array to push the row onto instead of inserting it
-export async function notifyWhatsApp(event, payload = {}) {
+// Evolution serves one message at a time per WhatsApp session. On 31 Oct a
+// fee-reminder run fired 166 sends inside two seconds; they queued behind
+// each other at the provider and 166 of 170 hit our 8s timeout while only
+// waiting their turn. Serialising here rather than at each call site fixes
+// every caller at once, including broadcast, which fans out the same way.
+let waChain = Promise.resolve();
+const WA_GAP_MS = Number(process.env.WHATSAPP_GAP_MS || 350);
+
+export function notifyWhatsApp(event, payload = {}) {
+  const run = waChain.then(() => sendOne(event, payload));
+  // Keep the chain alive on failure, and leave a gap so a long run does not
+  // become a burst the moment one send returns quickly.
+  waChain = run.then(
+    () => new Promise((r) => setTimeout(r, WA_GAP_MS)),
+    () => new Promise((r) => setTimeout(r, WA_GAP_MS))
+  );
+  return run;
+}
+
+async function sendOne(event, payload = {}) {
   const collect = payload._collect;
   // A bad MESSAGE_PROVIDER means nothing reaches any parent, so it is worth a
   // loud log row rather than a thrown error that a non-awaiting caller drops.

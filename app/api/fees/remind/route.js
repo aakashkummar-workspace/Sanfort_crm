@@ -140,11 +140,17 @@ export async function POST(req) {
   // Wait for the sends rather than assuming they worked. Capped so a hanging
   // provider cannot hold the request open indefinitely — anything unresolved
   // by then is reported as unknown, not as delivered.
+  // Sends are serialised in notifyWhatsApp (~1.5s each), so a full roster run
+  // takes minutes — longer than any HTTP request should be held open. Wait
+  // only as long as the batch could plausibly finish; past that let it carry
+  // on in the background and say so, rather than reporting "unknown" for
+  // sends that are simply still queued. Each one writes its own log row.
   let delivery = { attempted: waAttempts.length, delivered: 0, failed: 0, skipped: 0, failures: [] };
   if (waAttempts.length) {
+    const budgetMs = Math.min(25000, 4000 + waAttempts.length * 1800);
     const settled = await Promise.race([
       Promise.all(waAttempts),
-      new Promise((res) => setTimeout(() => res(null), 30000)),
+      new Promise((res) => setTimeout(() => res(null), budgetMs)),
     ]);
     if (settled) {
       for (const r of settled) {
@@ -153,7 +159,9 @@ export async function POST(req) {
         else { delivery.failed++; if (delivery.failures.length < 10) delivery.failures.push({ name: r.name, error: r.error }); }
       }
     } else {
-      delivery.unknown = waAttempts.length;
+      // Still working through the queue, not a failure. The count is what
+      // is left to send; the WhatsApp log shows each outcome as it lands.
+      delivery.sending = waAttempts.length;
     }
   }
 

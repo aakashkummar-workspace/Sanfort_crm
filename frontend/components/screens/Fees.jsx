@@ -16,7 +16,7 @@ function deliveryFlash(label, j) {
   const d = j.delivery;
   const n = (j.sent || []).length;
   if (!d || !d.attempted) return { msg: `${label} · ${n} reminder${n === 1 ? "" : "s"} recorded`, tone: "ok" };
-  if (d.unknown) return { msg: `${label} · ${n} recorded, but WhatsApp did not respond in time — check the WhatsApp log`, tone: "warn" };
+  if (d.sending) return { msg: `${label} · ${n} recorded. WhatsApp is still sending — watch the WhatsApp log for each outcome`, tone: "warn" };
   if (d.delivered === 0 && d.failed > 0) {
     return { msg: `${label} · ${n} recorded, but all ${d.failed} WhatsApp message${d.failed === 1 ? "" : "s"} FAILED — no parent was contacted`, tone: "bad" };
   }

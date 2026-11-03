@@ -22,6 +22,7 @@
 // log row for free and can keep ignoring the promise.
 import { logAudit, addWhatsAppMessage, addWhatsAppMessages, newWhatsAppMessageId } from "./db";
 import { getProvider } from "./providers/index.js";
+import { checkServiceStatus } from "./service-status.js";
 
 // India numbers: strip everything except digits, drop leading 0, prefix 91
 // if missing. Returns null if the result isn't a 12-digit Indian number
@@ -151,6 +152,21 @@ export async function notifyWhatsApp(event, payload = {}) {
       status: "skipped", error: e.message,
     }, collect);
     return { ok: false, skipped: e.message };
+  }
+
+  // Billing gate: refuse to send while SirahOS reports this school's WhatsApp
+  // service as locked for non-payment. Logged like any other skip, so the
+  // reason shows in the message log instead of messages quietly vanishing.
+  const service = await checkServiceStatus();
+  if (!service.allowed) {
+    const detail = `${event} skipped: WhatsApp service locked (${service.reason || "payment overdue"})`;
+    console.warn(`[whatsapp] ${detail}`);
+    await recordAudit(event, "skipped", detail);
+    await recordMessage({
+      ...buildLogRow(event, payload, normalizeIndianPhone(payload.phone)),
+      provider: provider.id, status: "skipped", error: detail,
+    }, collect);
+    return { ok: false, skipped: detail };
   }
 
   const env = provider.envStatus();

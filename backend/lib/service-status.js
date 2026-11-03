@@ -36,9 +36,7 @@ export async function checkServiceStatus() {
   const { base, projectId, secret } = config();
   if (!projectId || !secret) return { allowed: true };          // gate not configured
 
-  if (cache.known && Date.now() - cache.at < TTL_MS) {
-    return { allowed: cache.allowed, reason: cache.reason };
-  }
+  if (cache.known && Date.now() - cache.at < TTL_MS) return { ...cache };
 
   try {
     const res = await fetch(`${base}/api/service-status/${projectId}`, {
@@ -48,14 +46,25 @@ export async function checkServiceStatus() {
     if (!res.ok) {
       // 401/404/503 means the gate is misconfigured, not that we are overdue.
       console.warn(`[service-status] HTTP ${res.status} — allowing sends`);
-      return { allowed: cache.known ? cache.allowed : true, reason: cache.reason };
+      return cache.known ? { ...cache } : { allowed: true };
     }
     const s = await res.json();
-    cache = { allowed: s.allowed !== false, at: Date.now(), known: true, reason: s.reason };
-    return { allowed: cache.allowed, reason: cache.reason };
+    cache = {
+      allowed: s.allowed !== false,
+      at: Date.now(),
+      known: true,
+      reason: s.reason,
+      // Kept so the admin screen can state the amount and who to pay without
+      // asking SirahOS again.
+      message: s.message,
+      outstanding: s.outstanding,
+      payable: s.payable,
+      contact: s.contact,
+    };
+    return { ...cache };
   } catch (e) {
     console.warn(`[service-status] unreachable (${e.message}) — using last known answer`);
-    return { allowed: cache.known ? cache.allowed : true, reason: cache.reason };
+    return cache.known ? { ...cache } : { allowed: true };
   }
 }
 

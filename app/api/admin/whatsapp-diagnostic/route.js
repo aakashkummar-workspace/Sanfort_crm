@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { notifyWhatsApp, whatsappEnvStatus } from "@/lib/whatsapp";
+import { checkServiceStatus } from "@/lib/service-status";
 import { logAudit, whatsAppCounts } from "@/lib/db";
 import { getProvider } from "@/lib/providers/index.js";
 
@@ -29,7 +30,12 @@ export async function GET() {
   try { provider = getProvider().id; } catch { provider = null; }
   let counts = {};
   try { counts = await whatsAppCounts(); } catch {}
-  return NextResponse.json({ ok: true, env: whatsappEnvStatus(), provider, counts });
+  // Billing state from SirahOS. When the service is locked, nothing below
+  // matters: no message leaves regardless of how healthy the provider is, so
+  // the admin screen needs the amount owed and who to pay, not a green tick.
+  let service = { allowed: true };
+  try { service = await checkServiceStatus(); } catch {}
+  return NextResponse.json({ ok: true, env: whatsappEnvStatus(), provider, counts, service });
 }
 
 export async function POST(req) {

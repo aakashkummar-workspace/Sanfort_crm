@@ -423,6 +423,24 @@ export default function Sidebar({ current, setCurrent, role, user, permissions, 
   // stays closed across reloads. Default: every group expanded.
   const storageKey = `vidyalaya360.sidebar.collapsed.${role}`;
   const [collapsed, setCollapsed] = useState(() => new Set());
+  // Whether the WhatsApp service is locked for non-payment. Shown as a padlock
+  // on the WhatsApp log item so it is obvious without opening the page.
+  const [waLocked, setWaLocked] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const r = await fetch("/api/admin/whatsapp-diagnostic");
+        if (!r.ok) return;
+        const j = await r.json();
+        if (alive) setWaLocked(j?.service?.allowed === false);
+      } catch { /* a sidebar must never break on a failed poll */ }
+    };
+    check();
+    const t = setInterval(check, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -529,6 +547,14 @@ export default function Sidebar({ current, setCurrent, role, user, permissions, 
                       <div key={it.id} className={`side-item ${active ? "active" : ""}`} onClick={() => setCurrent(it.id)}>
                         <Icon name={it.icon} size={16} className="side-icon" />
                         <span className="side-lbl">{it.label}</span>
+                        {it.id === "whatsapp" && waLocked && (
+                          <span
+                            title="WhatsApp messaging is paused — the service is not paid up"
+                            style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", color: "var(--bad, #dc2626)" }}
+                          >
+                            <Icon name="warning" size={13} />
+                          </span>
+                        )}
                         {it.live && (
                           <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, color: "var(--ok)", fontSize: 10.5, fontWeight: 500 }}>
                             <span className="pulse-dot" />

@@ -4,6 +4,7 @@ import {
   addChangeReport, listChangeReports, notifyRole, logAudit,
 } from "@/lib/db";
 import { writeScreenshot } from "@/lib/media";
+import { forwardToSirahOS } from "@/lib/change-forward";
 import {
   canFile, canTriage, REPORT_TYPES, SEVERITIES, STATUSES,
 } from "@/lib/change-reports";
@@ -92,6 +93,10 @@ export async function POST(req) {
       description: `${report.reporterName} · ${report.pageRoute || "unknown screen"}`,
       redirectUrl: "/?screen=change_reports",
     }).catch((e) => console.warn(`[change-reports] notify failed: ${e.message}`));
+
+    // Copy it to Sirah Digital, who make the changes. Same reasoning as above:
+    // not awaited, never throws, and the report stands without it.
+    forwardToSirahOS(report).catch(() => {});
 
     try {
       await logAudit(session.name || "Staff", "Filed change report", `${report.id} · ${report.title}`, {

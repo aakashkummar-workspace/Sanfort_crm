@@ -4,6 +4,7 @@ import {
   getChangeReport, updateChangeReport, removeChangeReport,
   addNotification, logAudit,
 } from "@/lib/db";
+import { pushStatusToSirahOS } from "@/lib/change-forward";
 import { deleteScreenshot } from "@/lib/media";
 import { canTriage, STATUSES, STATUS_LABELS } from "@/lib/change-reports";
 
@@ -55,6 +56,12 @@ export async function PATCH(req, { params }) {
       assignedToName: body?.assignedToName,
       resolutionNotes: body?.resolutionNotes,
     });
+
+    // Mirror it onto Sirah Digital's board. Not awaited and never throws:
+    // the status is saved, and their server must not fail our triage.
+    if (body?.status && body.status !== before.status) {
+      pushStatusToSirahOS(params.id, body.status).catch(() => {});
+    }
 
     // Tell the reporter their report moved. People who never see their
     // reports go anywhere stop filing them.

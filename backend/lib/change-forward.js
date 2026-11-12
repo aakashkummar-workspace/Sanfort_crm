@@ -75,3 +75,32 @@ export async function forwardToSirahOS(report) {
     console.warn(`[change-forward] could not forward report ${report.id}: ${e.message}`);
   }
 }
+
+/**
+ * Tell SirahOS we moved a report along.
+ *
+ * The forward above is only on create, so without this they push their
+ * decisions to us and ours never arrive - a report fixed here sat on their
+ * board as in progress indefinitely.
+ *
+ * Same fire-and-forget rules: never throws, never rejects. The status is
+ * already saved here, and their server being down must not fail triage.
+ */
+export async function pushStatusToSirahOS(reportId, status) {
+  const { base, projectId, secret } = config();
+  if (!projectId || !secret || !reportId || !status) return;
+
+  try {
+    const res = await fetch(`${base}/api/change-intake/${projectId}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Sirahos-Signature": secret },
+      body: JSON.stringify({ reference: reportId, source: "sanfort-crm", status }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    // 404 means they never received the report, which is worth seeing in the
+    // log but is not something triage here can fix.
+    if (!res.ok) console.warn(`[change-forward] SirahOS returned ${res.status} for status of ${reportId}`);
+  } catch (e) {
+    console.warn(`[change-forward] could not push status for ${reportId}: ${e.message}`);
+  }
+}

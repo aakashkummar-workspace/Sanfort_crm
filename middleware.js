@@ -25,6 +25,10 @@ const PUBLIC_PATHS = [
   // has no session yet. The route itself validates the token, which expires
   // and is revocable, and will only ever open a session for a donor account.
   "/api/donor-access",
+  // Sirah Digital pushing a change-report status to us. No session exists:
+  // the caller is their server. The route checks a shared secret itself,
+  // which is why it is safe to let past the session gate.
+  "/api/sirahos/change-status",
 ];
 
 function isPublic(pathname) {

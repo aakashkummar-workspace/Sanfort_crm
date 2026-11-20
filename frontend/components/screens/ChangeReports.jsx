@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Icon from "../Icon";
+import { useDismiss } from "../useDismiss";
 import { KPI } from "../ui";
 import {
   TYPE_LABELS, SEVERITY_LABELS, STATUS_LABELS, STATUSES, OPEN_STATUSES,
@@ -41,6 +42,7 @@ export default function ChangeReports({ session = {}, showToast }) {
   const [total, setTotal] = useState(0);
   const [canTriage, setCanTriage] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [status, setStatus] = useState("");
   const [type, setType] = useState("");
@@ -62,7 +64,7 @@ export default function ChangeReports({ session = {}, showToast }) {
       setTotal(j.total || 0);
       setCanTriage(!!j.canTriage);
     } catch (e) { setErr(e.message || String(e)); }
-    finally { setLoading(false); }
+    finally { setLoading(false); setLoaded(true); }
   }, [status, type, severity]);
 
   useEffect(() => { load(); }, [load]);
@@ -140,7 +142,7 @@ export default function ChangeReports({ session = {}, showToast }) {
 
         {err ? (
           <div className="card-body" style={{ color: "var(--err)", fontSize: 12.5 }}>{err}</div>
-        ) : loading ? (
+        ) : loading && !loaded ? (
           <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Loading…</div>
         ) : reports.length === 0 ? (
           <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.6 }}>
@@ -184,6 +186,7 @@ export default function ChangeReports({ session = {}, showToast }) {
 }
 
 function DetailModal({ report, canTriage, onPatch, onDelete, onClose }) {
+  const panelRef = useDismiss(onClose);
   const [notes, setNotes] = useState(report.resolutionNotes || "");
   const [shotUrl, setShotUrl] = useState(null);
 
@@ -211,11 +214,11 @@ function DetailModal({ report, canTriage, onPatch, onDelete, onClose }) {
   useEffect(() => { setNotes(report.resolutionNotes || ""); }, [report.id, report.resolutionNotes]);
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.5)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card"
+      <div ref={panelRef} onClick={(e) => e.stopPropagation()} className="card modal-panel"
         style={{ width: "100%", maxWidth: 680, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>

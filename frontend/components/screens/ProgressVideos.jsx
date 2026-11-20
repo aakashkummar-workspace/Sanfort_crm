@@ -61,6 +61,7 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
   const [videos, setVideos] = useState([]);
   const [disk, setDisk] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [uploadFor, setUploadFor] = useState(null);
   const [playing, setPlaying] = useState(null);
@@ -74,7 +75,7 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
       setVideos(j.videos || []);
       if (j.disk) setDisk(j.disk);
     } catch (e) { setErr(e.message || String(e)); }
-    finally { setLoading(false); }
+    finally { setLoading(false); setLoaded(true); }
   }, [period]);
 
   useEffect(() => { load(); }, [load]);
@@ -184,18 +185,36 @@ export default function ProgressVideos({ E = {}, session = {}, showToast }) {
           <div className="card-body" style={{ color: "var(--err)", fontSize: 12.5 }}>{err}</div>
         )}
 
-        {loading ? (
-          <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Loading…</div>
+        {loading && !loaded ? (
+          <div className="card-body" style={{ padding: 0 }}>
+            {Array.from({ length: 8 }, (_, i) => (
+              <div key={i} className="skel-row">
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="skel skel-line" style={{ width: "38%" }} />
+                  <div className="skel skel-line sm" style={{ width: "22%", marginTop: 6 }} />
+                </div>
+                <div className="skel" style={{ width: 64, height: 20, borderRadius: 999 }} />
+                <div className="skel" style={{ width: 92, height: 11 }} />
+                <div className="skel" style={{ width: 70, height: 26, borderRadius: 7 }} />
+              </div>
+            ))}
+          </div>
         ) : rows.length === 0 ? (
           <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>
             No students match that filter.
           </div>
         ) : (
-          <div className="card-body" style={{ padding: 0 }}>
-            {rows.map((s) => {
+          <div className={`card-body${loading ? " is-refetching" : ""}`} style={{ padding: 0 }}>
+            {rows.map((s, i) => {
               const v = byStudent.get(s.id);
               return (
-                <div key={s.id} className="lrow" style={{ alignItems: "center", gap: 12 }}>
+                <div key={s.id} className="lrow stagger-in"
+                  style={{
+                    alignItems: "center", gap: 12,
+                    // Capped: an uncapped stagger makes a 200-row list take
+                    // seconds to finish appearing.
+                    animationDelay: `${Math.min(i * 0.015, 0.2)}s`,
+                  }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, fontSize: 13 }}>{s.name}</div>
                     <div style={{ fontSize: 11, color: "var(--ink-4)" }}>
@@ -345,11 +364,11 @@ function UploadModal({ student, period, existing, onClose, onDone }) {
   }
 
   return (
-    <div onClick={busy ? undefined : onClose} style={{
+    <div className="modal-backdrop" onClick={busy ? undefined : onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 520 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 520 }}>
         <div className="card-head">
           <div>
             <div className="card-title">{existing ? "Replace" : "Upload"} · {student.name}</div>
@@ -462,11 +481,11 @@ function PlayerModal({
   }, [onPrev, onNext]);
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.6)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 680 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 680 }}>
         <div className="card-head">
           <div>
             <div className="card-title">{student?.name || video.studentId}</div>

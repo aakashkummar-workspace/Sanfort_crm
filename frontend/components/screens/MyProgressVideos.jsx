@@ -18,6 +18,7 @@ export default function MyProgressVideos({ E = {}, session = {} }) {
   const students = useMemo(() => E.ADDED_STUDENTS || [], [E.ADDED_STUDENTS]);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState(null);
 
@@ -29,7 +30,7 @@ export default function MyProgressVideos({ E = {}, session = {} }) {
       if (!r.ok || !j.ok) throw new Error(j.error || "Could not load videos");
       setVideos(j.videos || []);
     } catch (e) { setErr(e.message || String(e)); }
-    finally { setLoading(false); }
+    finally { setLoading(false); setLoaded(true); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -70,7 +71,7 @@ export default function MyProgressVideos({ E = {}, session = {} }) {
 
         {err ? (
           <div className="card-body" style={{ color: "var(--err)", fontSize: 12.5 }}>{err}</div>
-        ) : loading ? (
+        ) : loading && !loaded ? (
           <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)" }}>Loading…</div>
         ) : groups.length === 0 ? (
           <div className="card-body" style={{ fontSize: 12.5, color: "var(--ink-4)", lineHeight: 1.65 }}>
@@ -118,11 +119,11 @@ export default function MyProgressVideos({ E = {}, session = {} }) {
       </div>
 
       {open && (
-        <div onClick={() => setOpen(null)} style={{
+        <div className="modal-backdrop" onClick={() => setOpen(null)} style={{
           position: "fixed", inset: 0, background: "rgba(20,16,10,0.6)",
           display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
         }}>
-          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 680 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 680 }}>
             <div className="card-head">
               <div>
                 <div className="card-title">{periodLabel(open.period)}</div>

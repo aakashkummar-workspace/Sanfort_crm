@@ -112,7 +112,7 @@ export default function ChangeReportDialog({ session = {}, screen, onClose }) {
   }
 
   return (
-    <div
+    <div className="modal-backdrop"
       data-change-report-ui="1"
       onClick={busy ? undefined : onClose}
       style={{

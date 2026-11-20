@@ -604,14 +604,14 @@ function ModalShell({ title, sub, onClose, children, width = 520 }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div
+    <div className="modal-backdrop"
       onClick={onClose}
       style={{
         position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
         display: "grid", placeItems: "center", zIndex: 250, padding: 16,
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: width }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: width }}>
         <div className="card-head">
           <div>
             <div className="card-title">{title}</div>
@@ -685,11 +685,11 @@ function ImportStaffModal({ onClose, onSubmitCsv }) {
   const loginCount = Array.isArray(result?.logins) ? result.logins.length : 0;
 
   return (
-    <div onClick={phase === "importing" ? undefined : onClose} style={{
+    <div className="modal-backdrop" onClick={phase === "importing" ? undefined : onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 520 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 520 }}>
         <div className="card-head">
           <div>
             <div className="card-title">
@@ -864,11 +864,11 @@ function ImportStaffLoginsModal({ logins, onClose }) {
     URL.revokeObjectURL(url);
   };
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.55)",
       display: "grid", placeItems: "center", zIndex: 260, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 600 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 600 }}>
         <div className="card-head">
           <div>
             <div className="card-title">{count} teacher login{count === 1 ? "" : "s"} created</div>

@@ -299,8 +299,8 @@ function NewThreadModal({ students, onClose, onSubmit }) {
   const selectedTeacher = assignedTeachers.find((t) => t.email === teacherEmail);
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 250, padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 520 }}>
+    <div className="modal-backdrop" onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 250, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 520 }}>
         <div className="card-head">
           <div><div className="card-title">Talk to teacher</div><div className="card-sub">Sends to your child's assigned class teacher</div></div>
           <button className="icon-btn" onClick={onClose}><Icon name="x" size={14} /></button>

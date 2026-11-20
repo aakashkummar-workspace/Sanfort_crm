@@ -556,11 +556,11 @@ function AddClassModal({ existing, onClose, onSubmit }) {
     } finally { setBusy(false); }
   };
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 460 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 460 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Add a class</div>
@@ -659,11 +659,11 @@ function EditClassModal({ cls, subjectOptions = [], onClose, onSubmit }) {
   })();
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 520, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 520, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">Edit {cls.label}</div>
@@ -736,11 +736,11 @@ function ConfirmDialog({ title, body, danger, confirmLabel = "Confirm", onCancel
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
   return (
-    <div onClick={onCancel} style={{
+    <div className="modal-backdrop" onClick={onCancel} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.55)",
       display: "grid", placeItems: "center", zIndex: 300, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 420 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 420 }}>
         <div style={{ padding: "18px 18px 6px", display: "flex", alignItems: "flex-start", gap: 12 }}>
           <span style={{
             width: 36, height: 36, borderRadius: 9,

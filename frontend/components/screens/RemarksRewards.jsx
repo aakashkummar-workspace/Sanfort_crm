@@ -460,11 +460,11 @@ function ResolveModal({ entry, targetLabel, busy, onClose, onSubmit }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.5)",
       display: "grid", placeItems: "center", zIndex: 260, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 480 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 480 }}>
         <div className="card-head">
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--ok)" }}>
@@ -563,11 +563,11 @@ function NewEntryModal({ role, students, staff, users = [], onClose, onSubmit })
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
       zIndex: 250, display: "grid", placeItems: "center", padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 520, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 520, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">New entry</div>

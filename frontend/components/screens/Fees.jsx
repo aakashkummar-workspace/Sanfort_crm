@@ -1723,8 +1723,8 @@ export default function ScreenFees({ E, refresh, role, session, searchFocus, cle
       )}
 
       {pendingClassPick && (
-        <div onClick={() => setPendingClassPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 300, padding: 16 }}>
-          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 480, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+        <div className="modal-backdrop" onClick={() => setPendingClassPick(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 300, padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 480, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
             <div className="card-head">
               <div>
                 <div className="card-title">Pending · {pendingClassPick.termLabel} — by class</div>
@@ -1770,8 +1770,8 @@ function ConfirmModal({ title, message, confirmLabel = "Yes", cancelLabel = "No"
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel, busy]);
   return (
-    <div onClick={() => { if (!busy) onCancel(); }} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 300, padding: 16 }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 400 }}>
+    <div className="modal-backdrop" onClick={() => { if (!busy) onCancel(); }} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 300, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 400 }}>
         <div className="card-head">
           <div><div className="card-title">{title}</div></div>
           <button type="button" className="icon-btn" onClick={onCancel} disabled={busy}><Icon name="x" size={14} /></button>
@@ -1903,8 +1903,8 @@ function CollectionSummary({ recent }) {
     </div>
 
     {detail && (
-      <div onClick={() => setDetail(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 260, padding: 16 }}>
-        <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div className="modal-backdrop" onClick={() => setDetail(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 260, padding: 16 }}>
+        <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
           <div className="card-head">
             <div>
               <div className="card-title">Collection · {fmtKey(detail.key)}</div>
@@ -2090,11 +2090,11 @@ function PayOnlineModal({ order, busy, onClose, onConfirm }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 460 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 460 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Confirm online payment</div>
@@ -2148,11 +2148,11 @@ function DeleteReceiptModal({ receipt, onCancel, onConfirm }) {
   };
   const amt = Number(receipt?.amount) || 0;
   return (
-    <div onClick={onCancel} style={{
+    <div className="modal-backdrop" onClick={onCancel} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.55)",
       display: "grid", placeItems: "center", zIndex: 300, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 440 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 440 }}>
         <div style={{ padding: "18px 18px 6px", display: "flex", alignItems: "flex-start", gap: 12 }}>
           <span style={{
             width: 36, height: 36, borderRadius: 9,
@@ -2217,11 +2217,11 @@ function EditFeeAmountModal({ fee, onClose, onSave }) {
     try { await onSave(num); } finally { setBusy(false); }
   };
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 420 }}>
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 420 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Edit fee amount</div>
@@ -2349,8 +2349,8 @@ function FeeStructureModal({ classes, onClose, onSaved }) {
   }
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto" }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+    <div className="modal-backdrop" onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">Fee structure</div>
@@ -2454,11 +2454,11 @@ function AddFeeItemModal({ students, onClose, onSave }) {
   const selectedStudent = students.find((s) => s.id === studentId);
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
     }}>
-      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 480, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 480, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">Add fee</div>
@@ -2836,7 +2836,7 @@ function ReportMenu({ onFull, onPick, onPending, onPendingClass, onClose }) {
   );
 
   return (
-    <div
+    <div className="modal-backdrop"
       className="report-menu-overlay"
       onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 300, padding: 16 }}

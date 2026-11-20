@@ -44,11 +44,11 @@ export default function CredentialsModal({
   const copyBoth = () => copy(`Login: ${email}\nPassword: ${password}`, "Credentials");
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.5)",
       display: "grid", placeItems: "center", zIndex: 260, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 480 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 480 }}>
         <div className="card-head">
           <div>
             <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--ok)" }}>

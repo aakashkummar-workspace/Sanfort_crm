@@ -1025,14 +1025,14 @@ function EditFeeModal({ student, summary, onClose, onSubmit }) {
   };
 
   return (
-    <div
+    <div className="modal-backdrop"
       onClick={onClose}
       style={{
         position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
         display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto",
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 460, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 460, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">Edit fees · {student.name}</div>
@@ -1201,14 +1201,14 @@ function ModalShell({ title, sub, onClose, children, width = 460 }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div
+    <div className="modal-backdrop"
       onClick={onClose}
       style={{
         position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
         display: "grid", placeItems: "center", zIndex: 250, padding: 16,
       }}
     >
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: width }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: width }}>
         <div className="card-head">
           <div>
             <div className="card-title">{title}</div>
@@ -2052,11 +2052,11 @@ function ConfirmArchive({ student, onCancel, onConfirm }) {
     try { await onConfirm(); } finally { setBusy(false); }
   };
   return (
-    <div onClick={onCancel} style={{
+    <div className="modal-backdrop" onClick={onCancel} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 460 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 460 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Withdraw {student.name}?</div>
@@ -2175,11 +2175,11 @@ function ProfileModal({ student, onClose, onMessage, onTC, hideContact = false, 
     : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{rows}</div>;
 
   return (
-    <div
+    <div className="modal-backdrop"
       onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)", display: "grid", placeItems: "center", zIndex: 250, padding: 16, overflowY: "auto" }}
     >
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 760, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 760, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         {/* Header */}
         <div style={{ padding: "22px 24px", display: "flex", alignItems: "center", gap: 16, borderBottom: "1px solid var(--rule-2)" }}>
           <div style={{ width: 56, height: 56, borderRadius: 14, background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "var(--accent-ink)", display: "grid", placeItems: "center", fontWeight: 600, fontSize: 20 }}>
@@ -2496,11 +2496,11 @@ function MessageParentModal({ student, onClose, flash }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 540 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 540 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Message {student.name}'s parent</div>
@@ -2575,11 +2575,11 @@ function IssueTcModal({ student, onClose, onIssued, flash }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(20,16,10,0.45)",
       display: "grid", placeItems: "center", zIndex: 250, padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 460 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 460 }}>
         <div className="card-head">
           <div>
             <div className="card-title">Issue TC for {student.name}?</div>

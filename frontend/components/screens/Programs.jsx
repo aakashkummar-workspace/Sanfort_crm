@@ -577,11 +577,11 @@ function RosterPicker({ students, selected, onClose, onSave }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
       zIndex: 250, display: "grid", placeItems: "center", padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 560, maxHeight: "calc(100vh - 32px)", display: "flex", flexDirection: "column" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 560, maxHeight: "calc(100vh - 32px)", display: "flex", flexDirection: "column" }}>
         <div className="card-head">
           <div>
             <div className="card-title">Pick participants</div>
@@ -670,11 +670,11 @@ function ProgramModal({ program, students, onClose, onSubmit }) {
   }
 
   return (
-    <div onClick={onClose} style={{
+    <div className="modal-backdrop" onClick={onClose} style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
       zIndex: 250, display: "grid", placeItems: "center", padding: 16,
     }}>
-      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 580, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-panel" style={{ width: "100%", maxWidth: 580, maxHeight: "calc(100vh - 32px)", overflowY: "auto" }}>
         <div className="card-head">
           <div>
             <div className="card-title">{isEdit ? "Edit program" : "New program"}</div>

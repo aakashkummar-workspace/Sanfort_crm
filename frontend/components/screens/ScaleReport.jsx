@@ -94,6 +94,7 @@ export default function ScreenScaleReport({ E, role, session, searchFocus, clear
   const [observation, setObservation] = useState("");
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
 
   // Distinct class list pulled from the role-scoped roster — sorted
@@ -162,6 +163,7 @@ export default function ScreenScaleReport({ E, role, session, searchFocus, clear
       setProfile(null);
     } finally {
       setLoading(false);
+      setLoaded(true);
     }
   }
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [studentId, term, customRange.from, customRange.to]);
@@ -355,7 +357,7 @@ export default function ScreenScaleReport({ E, role, session, searchFocus, clear
 
       {!studentId ? (
         <div className="card"><div className="empty" style={{ padding: 50 }}>Pick a student to view their SCALE report.</div></div>
-      ) : loading ? (
+      ) : loading && !loaded ? (
         <div className="card"><div className="empty" style={{ padding: 50 }}>Loading…</div></div>
       ) : err ? (
         <div className="card"><div className="empty" style={{ padding: 50, color: "var(--bad)" }}>{err}</div></div>

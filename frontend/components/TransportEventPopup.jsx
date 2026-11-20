@@ -169,7 +169,7 @@ export default function TransportEventPopup() {
   if (!current) return null;
 
   return (
-    <div
+    <div className="modal-backdrop"
       onClick={dismiss}
       role="dialog"
       aria-live="polite"
